@@ -1,12 +1,13 @@
 """
-Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Beginner Friendly + Fast Caching).
+Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (100+ Second Fast Multi-Channel Viewer).
 
 Features:
-1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer with Color-Coded Event Overlays & Banners.
-2. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
-3. HTK Differential Energy Feature Heatmap & Line Inspector.
-4. PyTorch EEGEventDataset & DataLoader Live Simulator.
-5. Interactive Help Guide & Clinical Terminology Documentation.
+1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer (100+ second default view with fast downsampling).
+2. Color-coded Event Annotation Legend, Overlays, and Banners.
+3. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
+4. HTK Differential Energy Feature Heatmap & Line Inspector.
+5. PyTorch EEGEventDataset & DataLoader Live Simulator.
+6. Interactive Help Guide & Clinical Terminology Documentation.
 """
 
 import os
@@ -123,13 +124,6 @@ app.index_string = '''
                 margin-bottom: 20px;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.05);
             }
-            .event-badge {
-                font-weight: 600;
-                padding: 4px 10px;
-                border-radius: 4px;
-                margin-right: 8px;
-                font-size: 13px;
-            }
         </style>
     </head>
     <body>
@@ -145,21 +139,30 @@ app.index_string = '''
 
 # High-Visibility Color palette for event classes
 CLASS_COLORS = {
-    'bckg': 'rgba(148, 163, 184, 0.25)',  # Slate Gray
-    'spsw': 'rgba(239, 68, 68, 0.45)',    # Bright Red (Spike Wave / Seizure)
-    'gped': 'rgba(249, 115, 22, 0.45)',   # Orange (Generalized Discharge)
-    'pled': 'rgba(234, 179, 8, 0.45)',    # Gold (Periodic Discharge)
-    'eyem': 'rgba(16, 185, 129, 0.45)',   # Emerald (Eye Movement)
-    'artf': 'rgba(59, 130, 246, 0.45)'    # Blue (Artifact)
+    'bckg': 'rgba(148, 163, 184, 0.20)',  # Slate Gray
+    'spsw': 'rgba(239, 68, 68, 0.40)',    # Bright Red (Spike Wave / Seizure)
+    'gped': 'rgba(249, 115, 22, 0.40)',   # Orange (Generalized Discharge)
+    'pled': 'rgba(234, 179, 8, 0.40)',    # Gold (Periodic Discharge)
+    'eyem': 'rgba(16, 185, 129, 0.40)',   # Emerald (Eye Movement)
+    'artf': 'rgba(59, 130, 246, 0.40)'    # Blue (Artifact)
 }
 
 CLASS_HEX = {
-    'bckg': '#94a3b8',
     'spsw': '#ef4444',
     'gped': '#f97316',
     'pled': '#eab308',
     'eyem': '#10b981',
-    'artf': '#3b82f6'
+    'artf': '#3b82f6',
+    'bckg': '#94a3b8'
+}
+
+CLASS_FULL_NAMES = {
+    'spsw': 'Spike & Wave (Seizure)',
+    'gped': 'Generalized Periodic Discharge',
+    'pled': 'Periodic Lateralized Discharge',
+    'eyem': 'Eye Movement Artifact',
+    'artf': 'Noise Artifact',
+    'bckg': 'Baseline Background'
 }
 
 def get_session_files():
@@ -228,13 +231,13 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 html.Hr(style={'borderColor': '#cbd5e1', 'margin': '20px 0'}),
                 html.H5("⚡ PyTorch Loader Config", style={'color': '#0f172a', 'fontWeight': '700'}),
 
-                # Window Size Slider (updatemode='mouseup' for fast responsiveness)
+                # Window Size Slider
                 html.Label("Window Size (sec):", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='win-size-slider', min=0.5, max=5.0, step=0.5, value=2.0,
                            updatemode='mouseup',
                            marks={0.5: '0.5s', 2.0: '2s', 5.0: '5s'}, tooltip={'always_visible': True}),
 
-                # Stride Slider (updatemode='mouseup')
+                # Stride Slider
                 html.Label("Stride (sec):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='stride-slider', min=0.2, max=2.0, step=0.2, value=1.0,
                            updatemode='mouseup',
@@ -269,38 +272,43 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 # TAB 1: EDF & TCP Montage Signals
                 dcc.Tab(label='📈 EDF Signals & TCP Montage', value='tab-signals', className='p-3', style={'backgroundColor': '#ffffff', 'color': '#334155'}, selected_style={'backgroundColor': '#ffffff', 'color': '#0284c7', 'fontWeight': 'bold'}, children=[
 
-                    # Beginner Guide Explanatory Card
+                    # Beginner Guide & Event Explanation Card
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#e0f2fe', 'border': '1px solid #7dd3fc'}, children=[
-                        html.H5("💡 What Am I Looking At? (Quick Guide for Beginners)", style={'color': '#0369a1', 'fontWeight': '700', 'marginBottom': '8px'}),
+                        html.H5("💡 Understanding EEG Signals & Event Labels (100+ Second View)", style={'color': '#0369a1', 'fontWeight': '700', 'marginBottom': '8px'}),
                         html.P(children=[
-                            html.B("Blue Waves: "), "Electrical signals recorded from brain scalp electrodes (e.g. FP1-F7 = Frontal to Temporal). ",
+                            html.B("Blue Waves: "), "22 differential channels of brain wave voltage signals (ACNS TCP Montage). ",
                             html.Br(),
-                            html.B("Colored Vertical Overlays: "), "Clinical event annotations automatically plotted on the exact channels where they occur:"
+                            html.B("Color-Coded Event Highlights & Banners: "), "Plotted across continuous 100+ second recording intervals:"
                         ], style={'margin': 0, 'fontSize': '14px', 'color': '#0c4a6e'}),
                         html.Div(className='mt-2 d-flex flex-wrap gap-2', children=[
-                            html.Span("🔴 spsw: Spike & Wave (Seizure)", className="badge bg-danger"),
-                            html.Span("🟧 gped: Generalized Periodic", className="badge bg-warning text-dark"),
+                            html.Span("🔴 spsw: Spike & Wave (Seizure IED)", className="badge bg-danger"),
+                            html.Span("🟧 gped: Generalized Periodic Discharge", className="badge bg-warning text-dark"),
                             html.Span("🟨 pled: Periodic Discharge", className="badge bg-warning text-dark"),
-                            html.Span("🟩 eyem: Eye Blink", className="badge bg-success"),
+                            html.Span("🟩 eyem: Eye Movement Artifact", className="badge bg-success"),
                             html.Span("🟦 artf: Noise Artifact", className="badge bg-primary"),
-                            html.Span("⬜ bckg: Baseline Rhythm", className="badge bg-secondary")
+                            html.Span("⬜ bckg: Baseline Rhythms", className="badge bg-secondary")
                         ])
                     ]),
 
-                    # Control Bar & Time Slider
+                    # Control Bar & Time Slider (Default: 0 - 100 seconds)
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
                         html.Div(className='d-flex align-items-center justify-content-between', children=[
-                            html.Span("Display Time Range (Seconds):", className='fw-bold', style={'color': '#1e293b'}),
+                            html.Span("Display Time Range (0 to 100+ Seconds):", className='fw-bold', style={'color': '#1e293b'}),
                             html.Div(style={'width': '65%'}, children=[
-                                dcc.RangeSlider(id='time-range-slider', min=0, max=60, step=1, value=[0, 15],
-                                               updatemode='mouseup', tooltip={'always_visible': True})
+                                dcc.RangeSlider(
+                                    id='time-range-slider',
+                                    min=0, max=300, step=5, value=[0, 30],
+                                    updatemode='mouseup',
+                                    marks={0: '0s', 20: '20s', 50: '50s', 100: '100s', 200: '200s', 300: '300s'},
+                                    tooltip={'always_visible': True}
+                                )
                             ])
                         ])
                     ]),
 
                     # Main EEG Signal Plot
                     html.Div(className='p-2 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
-                        dcc.Graph(id='eeg-signal-graph', style={'height': '780px'})
+                        dcc.Graph(id='eeg-signal-graph', style={'height': '800px'})
                     ])
                 ]),
 
@@ -524,7 +532,7 @@ def update_htk_options(rel_edf_path):
 )
 def update_eeg_signals(rel_edf_path, montage_mode, time_range):
     if not rel_edf_path:
-        return go.Figure(), 60
+        return go.Figure(), 300
 
     abs_edf = os.path.join(CORPUS_ROOT, rel_edf_path)
     rec_path = os.path.splitext(abs_edf)[0] + '.rec'
@@ -548,22 +556,37 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
 
     t = np.linspace(start_sec, stop_sample / fs, max(1, stop_sample - start_sample))
 
+    # Fast downsampling for 100+ second view rendering
+    max_pts = 4000
+    decim = max(1, len(t) // max_pts)
+    t_plot = t[::decim]
+
     fig = go.Figure()
     offset_spacing = 150.0  # uV offset per channel
+
+    # Add Color Legend Items for Event Classes at Top Right
+    for cls_k, cls_label in CLASS_FULL_NAMES.items():
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode='markers',
+            name=f"{cls_k.upper()}: {cls_label}",
+            marker=dict(size=12, color=CLASS_HEX[cls_k], symbol='square')
+        ))
 
     # Plot EEG Traces
     for i in range(n_channels):
         sig = display_signals[i, start_sample:stop_sample]
+        sig_plot = sig[::decim]
         # Fast scaling
-        sig_scaled = (sig - np.mean(sig)) / (np.std(sig) + 1e-6) * 30.0 + (n_channels - 1 - i) * offset_spacing
+        sig_scaled = (sig_plot - np.mean(sig_plot)) / (np.std(sig_plot) + 1e-6) * 30.0 + (n_channels - 1 - i) * offset_spacing
 
         fig.add_trace(go.Scatter(
-            x=t,
+            x=t_plot,
             y=sig_scaled,
             mode='lines',
             name=display_names[i],
             line=dict(width=1.2, color='#0284c7'),
-            hoverinfo='x+name'
+            hoverinfo='x+name',
+            showlegend=False
         ))
 
     # Add Prominent Event Overlay Shading & Badges
@@ -576,17 +599,15 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
             cls_str = ev['label_str']
             color = CLASS_COLORS.get(cls_str, 'rgba(148, 163, 184, 0.25)')
 
-            # Highlight specific channel or full timeline
-            ch_idx = ev['channel_idx']
-            badge_text = f"<b>{cls_str.upper()}</b> ({ev_start:.1f}s - {ev_stop:.1f}s)"
+            badge_text = f"<b>{cls_str.upper()}</b> ({ev_start:.1f}s-{ev_stop:.1f}s)"
 
             fig.add_vrect(
                 x0=max(start_sec, ev_start),
                 x1=min(stop_sec, ev_stop),
                 fillcolor=color,
-                opacity=0.45,
+                opacity=0.40,
                 layer="below",
-                line_width=1,
+                line_width=1.5,
                 line_color=CLASS_HEX.get(cls_str, '#0284c7'),
                 annotation_text=badge_text,
                 annotation_position="top left",
@@ -599,7 +620,7 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
         plot_bgcolor='#ffffff',
         margin=dict(l=140, r=40, t=50, b=50),
         title=dict(
-            text=f"EEG Traces & Event Annotations ({len(events_in_range)} Events Visible in Range [{start_sec}s - {stop_sec}s])",
+            text=f"Continuous 100+ Second EEG Traces with Color-Coded Event Labels ({len(events_in_range)} Events Visible in Range [{start_sec:.0f}s - {stop_sec:.0f}s])",
             font=dict(size=14, color='#0369a1')
         ),
         xaxis=dict(
@@ -617,10 +638,19 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
             gridcolor='#e2e8f0',
             tickfont=dict(size=12, color='#0f172a', family='sans-serif')
         ),
-        showlegend=False
+        legend=dict(
+            title=dict(text="<b>Event Class Labels Legend</b>"),
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1.0,
+            font=dict(size=10)
+        ),
+        showlegend=True
     )
 
-    return fig, int(total_sec)
+    return fig, max(300, int(total_sec))
 
 
 @app.callback(
