@@ -1,8 +1,8 @@
 """
-Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Light Theme + Fast Caching).
+Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Beginner Friendly + Fast Caching).
 
 Features:
-1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer with Event Overlays.
+1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer with Color-Coded Event Overlays & Banners.
 2. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
 3. HTK Differential Energy Feature Heatmap & Line Inspector.
 4. PyTorch EEGEventDataset & DataLoader Live Simulator.
@@ -123,6 +123,13 @@ app.index_string = '''
                 margin-bottom: 20px;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.05);
             }
+            .event-badge {
+                font-weight: 600;
+                padding: 4px 10px;
+                border-radius: 4px;
+                margin-right: 8px;
+                font-size: 13px;
+            }
         </style>
     </head>
     <body>
@@ -136,14 +143,23 @@ app.index_string = '''
 </html>
 '''
 
-# Color palette for classes (Light theme compliant)
+# High-Visibility Color palette for event classes
 CLASS_COLORS = {
-    'bckg': 'rgba(108, 117, 125, 0.20)',  # Gray
-    'spsw': 'rgba(220, 53, 69, 0.40)',    # Red
-    'gped': 'rgba(253, 126, 20, 0.40)',   # Orange
-    'pled': 'rgba(234, 179, 8, 0.40)',    # Yellow/Gold
-    'eyem': 'rgba(16, 185, 129, 0.40)',   # Teal
-    'artf': 'rgba(37, 99, 235, 0.40)'     # Blue
+    'bckg': 'rgba(148, 163, 184, 0.25)',  # Slate Gray
+    'spsw': 'rgba(239, 68, 68, 0.45)',    # Bright Red (Spike Wave / Seizure)
+    'gped': 'rgba(249, 115, 22, 0.45)',   # Orange (Generalized Discharge)
+    'pled': 'rgba(234, 179, 8, 0.45)',    # Gold (Periodic Discharge)
+    'eyem': 'rgba(16, 185, 129, 0.45)',   # Emerald (Eye Movement)
+    'artf': 'rgba(59, 130, 246, 0.45)'    # Blue (Artifact)
+}
+
+CLASS_HEX = {
+    'bckg': '#94a3b8',
+    'spsw': '#ef4444',
+    'gped': '#f97316',
+    'pled': '#eab308',
+    'eyem': '#10b981',
+    'artf': '#3b82f6'
 }
 
 def get_session_files():
@@ -252,6 +268,26 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
 
                 # TAB 1: EDF & TCP Montage Signals
                 dcc.Tab(label='📈 EDF Signals & TCP Montage', value='tab-signals', className='p-3', style={'backgroundColor': '#ffffff', 'color': '#334155'}, selected_style={'backgroundColor': '#ffffff', 'color': '#0284c7', 'fontWeight': 'bold'}, children=[
+
+                    # Beginner Guide Explanatory Card
+                    html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#e0f2fe', 'border': '1px solid #7dd3fc'}, children=[
+                        html.H5("💡 What Am I Looking At? (Quick Guide for Beginners)", style={'color': '#0369a1', 'fontWeight': '700', 'marginBottom': '8px'}),
+                        html.P(children=[
+                            html.B("Blue Waves: "), "Electrical signals recorded from brain scalp electrodes (e.g. FP1-F7 = Frontal to Temporal). ",
+                            html.Br(),
+                            html.B("Colored Vertical Overlays: "), "Clinical event annotations automatically plotted on the exact channels where they occur:"
+                        ], style={'margin': 0, 'fontSize': '14px', 'color': '#0c4a6e'}),
+                        html.Div(className='mt-2 d-flex flex-wrap gap-2', children=[
+                            html.Span("🔴 spsw: Spike & Wave (Seizure)", className="badge bg-danger"),
+                            html.Span("🟧 gped: Generalized Periodic", className="badge bg-warning text-dark"),
+                            html.Span("🟨 pled: Periodic Discharge", className="badge bg-warning text-dark"),
+                            html.Span("🟩 eyem: Eye Blink", className="badge bg-success"),
+                            html.Span("🟦 artf: Noise Artifact", className="badge bg-primary"),
+                            html.Span("⬜ bckg: Baseline Rhythm", className="badge bg-secondary")
+                        ])
+                    ]),
+
+                    # Control Bar & Time Slider
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
                         html.Div(className='d-flex align-items-center justify-content-between', children=[
                             html.Span("Display Time Range (Seconds):", className='fw-bold', style={'color': '#1e293b'}),
@@ -261,8 +297,10 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                             ])
                         ])
                     ]),
+
+                    # Main EEG Signal Plot
                     html.Div(className='p-2 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
-                        dcc.Graph(id='eeg-signal-graph', style={'height': '760px'})
+                        dcc.Graph(id='eeg-signal-graph', style={'height': '780px'})
                     ])
                 ]),
 
@@ -513,6 +551,7 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
     fig = go.Figure()
     offset_spacing = 150.0  # uV offset per channel
 
+    # Plot EEG Traces
     for i in range(n_channels):
         sig = display_signals[i, start_sample:stop_sample]
         # Fast scaling
@@ -527,20 +566,29 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
             hoverinfo='x+name'
         ))
 
-    # Add Event Overlay Shading
+    # Add Prominent Event Overlay Shading & Badges
+    events_in_range = []
     for ev in events:
         ev_start = ev['start_sec']
         ev_stop = ev['stop_sec']
         if ev_stop >= start_sec and ev_start <= stop_sec:
-            color = CLASS_COLORS.get(ev['label_str'], 'rgba(148, 163, 184, 0.25)')
+            events_in_range.append(ev)
+            cls_str = ev['label_str']
+            color = CLASS_COLORS.get(cls_str, 'rgba(148, 163, 184, 0.25)')
+
+            # Highlight specific channel or full timeline
+            ch_idx = ev['channel_idx']
+            badge_text = f"<b>{cls_str.upper()}</b> ({ev_start:.1f}s - {ev_stop:.1f}s)"
+
             fig.add_vrect(
                 x0=max(start_sec, ev_start),
                 x1=min(stop_sec, ev_stop),
                 fillcolor=color,
-                opacity=0.5,
+                opacity=0.45,
                 layer="below",
-                line_width=0,
-                annotation_text=ev['label_str'].upper(),
+                line_width=1,
+                line_color=CLASS_HEX.get(cls_str, '#0284c7'),
+                annotation_text=badge_text,
                 annotation_position="top left",
                 annotation_font=dict(color='#0f172a', size=11, family='sans-serif')
             )
@@ -549,7 +597,11 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
         template='plotly_white',
         paper_bgcolor='#ffffff',
         plot_bgcolor='#ffffff',
-        margin=dict(l=140, r=40, t=40, b=50),
+        margin=dict(l=140, r=40, t=50, b=50),
+        title=dict(
+            text=f"EEG Traces & Event Annotations ({len(events_in_range)} Events Visible in Range [{start_sec}s - {stop_sec}s])",
+            font=dict(size=14, color='#0369a1')
+        ),
         xaxis=dict(
             title='Time (Seconds)',
             showgrid=True,
