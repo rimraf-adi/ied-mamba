@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Large Datasets and Output Artifacts
+TU-v2.0.1/
+output_analysis/
+ied-mamba/
+.idea/
+.vscode/
+*.edf
+*.htk
+*.rec
+*.lab
