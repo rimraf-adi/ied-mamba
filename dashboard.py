@@ -1,5 +1,5 @@
 """
-Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Light Theme).
+Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Clean Light Theme).
 
 Features:
 1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer with Event Overlays.
@@ -37,14 +37,94 @@ app = dash.Dash(
 )
 app.title = "TUH EEG Event Corpus - Interactive Dataset Dashboard"
 
+# Custom Index HTML string for clean CSS overrides (Light Theme)
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            body {
+                background-color: #f8fafc !important;
+                color: #0f172a !important;
+                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            }
+            .rc-slider-mark-text {
+                color: #475569 !important;
+                font-weight: 600 !important;
+                font-size: 12px !important;
+            }
+            .rc-slider-mark-text-active {
+                color: #0284c7 !important;
+            }
+            .rc-slider-track {
+                background-color: #0284c7 !important;
+            }
+            .rc-slider-handle {
+                border-color: #0284c7 !important;
+                background-color: #ffffff !important;
+            }
+            .rc-slider-tooltip-inner {
+                background-color: #ffffff !important;
+                color: #0f172a !important;
+                border: 1px solid #cbd5e1 !important;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.1) !important;
+                font-weight: bold !important;
+            }
+            .Select-control {
+                background-color: #ffffff !important;
+                border-color: #cbd5e1 !important;
+                color: #0f172a !important;
+            }
+            .Select-value-label, .Select-placeholder {
+                color: #0f172a !important;
+            }
+            .Select-menu-outer {
+                background-color: #ffffff !important;
+                color: #0f172a !important;
+                border-color: #cbd5e1 !important;
+            }
+            .Select-option {
+                background-color: #ffffff !important;
+                color: #0f172a !important;
+            }
+            .Select-option.is-focused {
+                background-color: #e0f2fe !important;
+                color: #0369a1 !important;
+            }
+            .nav-tabs .nav-link {
+                color: #475569 !important;
+                font-weight: 600 !important;
+            }
+            .nav-tabs .nav-link.active {
+                color: #0284c7 !important;
+                font-weight: 700 !important;
+                border-bottom: 3px solid #0284c7 !important;
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
 # Color palette for classes (Light theme compliant)
 CLASS_COLORS = {
-    'bckg': 'rgba(108, 117, 125, 0.25)',  # Gray
-    'spsw': 'rgba(220, 53, 69, 0.45)',    # Red
-    'gped': 'rgba(253, 126, 20, 0.45)',   # Orange
-    'pled': 'rgba(234, 179, 8, 0.45)',    # Yellow/Gold
-    'eyem': 'rgba(16, 185, 129, 0.45)',   # Teal
-    'artf': 'rgba(37, 99, 235, 0.45)'     # Blue
+    'bckg': 'rgba(108, 117, 125, 0.20)',  # Gray
+    'spsw': 'rgba(220, 53, 69, 0.40)',    # Red
+    'gped': 'rgba(253, 126, 20, 0.40)',   # Orange
+    'pled': 'rgba(234, 179, 8, 0.40)',    # Yellow/Gold
+    'eyem': 'rgba(16, 185, 129, 0.40)',   # Teal
+    'artf': 'rgba(37, 99, 235, 0.40)'     # Blue
 }
 
 def get_session_files():
@@ -58,8 +138,8 @@ def get_session_files():
 
 SESSION_FILES = get_session_files()
 
-# App Layout - Light Theme (#f8fafc background, #ffffff cards, #0f172a text)
-app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', 'minHeight': '100vh', 'padding': '24px', 'fontFamily': 'system-ui, -apple-system, sans-serif'}, children=[
+# App Layout - High-Contrast Light Theme (#f8fafc background, #ffffff cards, #0f172a text)
+app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', 'minHeight': '100vh', 'padding': '24px'}, children=[
 
     # Header Title Banner
     html.Div(className='d-flex justify-content-between align-items-center mb-4 p-4 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
@@ -76,11 +156,11 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
         # Left Control Sidebar
         html.Div(className='col-md-3', children=[
             html.Div(className='p-4 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
-                html.H5("⚙️ Dataset Controls", style={'color': '#0f172a', 'fontWeight': '600'}),
+                html.H5("⚙️ Dataset Controls", style={'color': '#0f172a', 'fontWeight': '700'}),
                 html.Hr(style={'borderColor': '#cbd5e1', 'margin': '12px 0 20px 0'}),
 
                 # Split Selector
-                html.Label("Dataset Split:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Dataset Split:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Dropdown(
                     id='split-select',
                     options=[{'label': 'Train Set', 'value': 'train'}, {'label': 'Eval Set', 'value': 'eval'}],
@@ -90,7 +170,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 ),
 
                 # Session EDF Dropdown
-                html.Label("Select Session / EDF File:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Select Session / EDF File:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Dropdown(
                     id='edf-file-select',
                     clearable=False,
@@ -98,7 +178,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 ),
 
                 # View Mode: Raw vs TCP Montage
-                html.Label("Channel Montage Mode:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Channel Montage Mode:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.RadioItems(
                     id='montage-mode',
                     options=[
@@ -107,24 +187,24 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                     ],
                     value='tcp',
                     inputStyle={'marginRight': '6px'},
-                    labelStyle={'display': 'block', 'marginBottom': '8px', 'color': '#334155', 'fontSize': '14px'}
+                    labelStyle={'display': 'block', 'marginBottom': '8px', 'color': '#1e293b', 'fontSize': '14px', 'fontWeight': '500'}
                 ),
 
                 html.Hr(style={'borderColor': '#cbd5e1', 'margin': '20px 0'}),
-                html.H5("⚡ PyTorch Loader Config", style={'color': '#0f172a', 'fontWeight': '600'}),
+                html.H5("⚡ PyTorch Loader Config", style={'color': '#0f172a', 'fontWeight': '700'}),
 
                 # Window Size Slider
-                html.Label("Window Size (sec):", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Window Size (sec):", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='win-size-slider', min=0.5, max=5.0, step=0.5, value=2.0,
                            marks={0.5: '0.5s', 2.0: '2s', 5.0: '5s'}, tooltip={'always_visible': True}),
 
                 # Stride Slider
-                html.Label("Stride (sec):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Stride (sec):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='stride-slider', min=0.2, max=2.0, step=0.2, value=1.0,
                            marks={0.2: '0.2s', 1.0: '1s', 2.0: '2s'}, tooltip={'always_visible': True}),
 
                 # Target FS Dropdown
-                html.Label("Target Sampling Frequency (Hz):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("Target Sampling Frequency (Hz):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Dropdown(
                     id='target-fs-select',
                     options=[{'label': f'{fs} Hz', 'value': fs} for fs in [100, 200, 250, 400, 500]],
@@ -134,7 +214,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 ),
 
                 # Batch Size Dropdown
-                html.Label("PyTorch Batch Size:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#334155'}),
+                html.Label("PyTorch Batch Size:", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Dropdown(
                     id='batch-size-select',
                     options=[{'label': f'Batch Size = {b}', 'value': b} for b in [8, 16, 32, 64]],
@@ -153,7 +233,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 dcc.Tab(label='📈 EDF Signals & TCP Montage', value='tab-signals', className='p-3', style={'backgroundColor': '#ffffff', 'color': '#334155'}, selected_style={'backgroundColor': '#ffffff', 'color': '#0284c7', 'fontWeight': 'bold'}, children=[
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
                         html.Div(className='d-flex align-items-center justify-content-between', children=[
-                            html.Span("Display Time Range (Seconds):", className='fw-bold', style={'color': '#334155'}),
+                            html.Span("Display Time Range (Seconds):", className='fw-bold', style={'color': '#1e293b'}),
                             html.Div(style={'width': '65%'}, children=[
                                 dcc.RangeSlider(id='time-range-slider', min=0, max=60, step=1, value=[0, 15],
                                                tooltip={'always_visible': True})
@@ -170,7 +250,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
                         html.Div(className='row align-items-center', children=[
                             html.Div(className='col-md-5', children=[
-                                html.Label("Select HTK Channel File:", className='fw-bold mb-1', style={'color': '#334155'}),
+                                html.Label("Select HTK Channel File:", className='fw-bold mb-1', style={'color': '#1e293b'}),
                                 dcc.Dropdown(id='htk-ch-select', style={'color': '#0f172a'})
                             ])
                         ])
@@ -352,23 +432,30 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
                 layer="below",
                 line_width=0,
                 annotation_text=ev['label_str'].upper(),
-                annotation_position="top left"
+                annotation_position="top left",
+                annotation_font=dict(color='#0f172a', size=11, family='sans-serif')
             )
 
-    # Fixed Margins: Generous left margin (l=130) so channel labels never get clipped!
+    # Fixed Margins: Generous left margin (l=140) so channel labels never get clipped!
     fig.update_layout(
         template='plotly_white',
         paper_bgcolor='#ffffff',
         plot_bgcolor='#ffffff',
-        margin=dict(l=130, r=30, t=40, b=50),
-        xaxis=dict(title='Time (Seconds)', showgrid=True, gridcolor='#e2e8f0', title_font=dict(size=13, color='#334155')),
+        margin=dict(l=140, r=40, t=40, b=50),
+        xaxis=dict(
+            title='Time (Seconds)',
+            showgrid=True,
+            gridcolor='#e2e8f0',
+            title_font=dict(size=13, color='#1e293b', family='sans-serif'),
+            tickfont=dict(size=11, color='#1e293b')
+        ),
         yaxis=dict(
             tickmode='array',
             tickvals=[(n_channels - 1 - i) * offset_spacing for i in range(n_channels)],
             ticktext=display_names,
             showgrid=True,
             gridcolor='#e2e8f0',
-            tickfont=dict(size=11, color='#0f172a')
+            tickfont=dict(size=12, color='#0f172a', family='sans-serif')
         ),
         showlegend=False
     )
@@ -405,7 +492,8 @@ def update_htk_plots(htk_path):
         plot_bgcolor='#ffffff',
         margin=dict(l=90, r=30, t=50, b=50),
         xaxis_title="Time (Seconds)",
-        yaxis_title="Feature Dimension"
+        yaxis_title="Feature Dimension",
+        font=dict(color='#0f172a')
     )
 
     # Line Plot Figure for First 3 Features (Fixed margins)
@@ -423,7 +511,8 @@ def update_htk_plots(htk_path):
         plot_bgcolor='#ffffff',
         margin=dict(l=70, r=30, t=50, b=50),
         xaxis_title="Time (Seconds)",
-        yaxis_title="Feature Value"
+        yaxis_title="Feature Value",
+        font=dict(color='#0f172a')
     )
 
     return fig_heat, fig_line
@@ -503,7 +592,8 @@ def update_pytorch_simulation(rel_edf_path, win_sec, stride_sec, target_fs, batc
         plot_bgcolor='#ffffff',
         margin=dict(l=80, r=30, t=50, b=50),
         xaxis_title="Window Time (Seconds)",
-        yaxis_title="Amplitude (uV)"
+        yaxis_title="Amplitude (uV)",
+        font=dict(color='#0f172a')
     )
 
     return shape_x_str, shape_y_str, str(n_windows), fig
