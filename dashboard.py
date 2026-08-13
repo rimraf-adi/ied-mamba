@@ -1,15 +1,17 @@
 """
-Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Clean Light Theme).
+Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Light Theme + Fast Caching).
 
 Features:
 1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer with Event Overlays.
 2. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
 3. HTK Differential Energy Feature Heatmap & Line Inspector.
-4. PyTorch EEGEventDataset & DataLoader Live Simulator (configurable window, stride, fs, batch size).
+4. PyTorch EEGEventDataset & DataLoader Live Simulator.
+5. Interactive Help Guide & Clinical Terminology Documentation.
 """
 
 import os
 import glob
+import functools
 import numpy as np
 import pandas as pd
 import torch
@@ -27,6 +29,15 @@ from dataset_loader import (
 )
 
 CORPUS_ROOT = r"d:\ied\TU-v2.0.1"
+
+# LRU Cache wrappers for fast sub-millisecond slider updates
+@functools.lru_cache(maxsize=64)
+def cached_read_edf(edf_path: str):
+    return read_edf_file(edf_path)
+
+@functools.lru_cache(maxsize=64)
+def cached_parse_rec(rec_path: str):
+    return parse_rec_file(rec_path)
 
 # Dash App Setup with Light Theme Styling
 app = dash.Dash(
@@ -104,6 +115,14 @@ app.index_string = '''
                 font-weight: 700 !important;
                 border-bottom: 3px solid #0284c7 !important;
             }
+            .help-card {
+                background-color: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 20px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            }
         </style>
     </head>
     <body>
@@ -138,7 +157,7 @@ def get_session_files():
 
 SESSION_FILES = get_session_files()
 
-# App Layout - High-Contrast Light Theme (#f8fafc background, #ffffff cards, #0f172a text)
+# App Layout - High-Contrast Light Theme
 app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', 'minHeight': '100vh', 'padding': '24px'}, children=[
 
     # Header Title Banner
@@ -193,14 +212,16 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                 html.Hr(style={'borderColor': '#cbd5e1', 'margin': '20px 0'}),
                 html.H5("⚡ PyTorch Loader Config", style={'color': '#0f172a', 'fontWeight': '700'}),
 
-                # Window Size Slider
+                # Window Size Slider (updatemode='mouseup' for fast responsiveness)
                 html.Label("Window Size (sec):", className='fw-bold mb-2', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='win-size-slider', min=0.5, max=5.0, step=0.5, value=2.0,
+                           updatemode='mouseup',
                            marks={0.5: '0.5s', 2.0: '2s', 5.0: '5s'}, tooltip={'always_visible': True}),
 
-                # Stride Slider
+                # Stride Slider (updatemode='mouseup')
                 html.Label("Stride (sec):", className='fw-bold mb-2 mt-4', style={'fontSize': '14px', 'color': '#1e293b'}),
                 dcc.Slider(id='stride-slider', min=0.2, max=2.0, step=0.2, value=1.0,
+                           updatemode='mouseup',
                            marks={0.2: '0.2s', 1.0: '1s', 2.0: '2s'}, tooltip={'always_visible': True}),
 
                 # Target FS Dropdown
@@ -236,7 +257,7 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                             html.Span("Display Time Range (Seconds):", className='fw-bold', style={'color': '#1e293b'}),
                             html.Div(style={'width': '65%'}, children=[
                                 dcc.RangeSlider(id='time-range-slider', min=0, max=60, step=1, value=[0, 15],
-                                               tooltip={'always_visible': True})
+                                               updatemode='mouseup', tooltip={'always_visible': True})
                             ])
                         ])
                     ]),
@@ -332,13 +353,100 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                     html.Div(className='p-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
                         dcc.Graph(id='pytorch-batch-graph', style={'height': '460px'})
                     ])
+                ]),
+
+                # TAB 5: Interactive Help Guide & Terminology
+                dcc.Tab(label='📖 Help Guide & Terms', value='tab-help', className='p-3', style={'backgroundColor': '#ffffff', 'color': '#334155'}, selected_style={'backgroundColor': '#ffffff', 'color': '#0284c7', 'fontWeight': 'bold'}, children=[
+                    html.Div(className='help-card', children=[
+                        html.H4("🧠 Clinical Event Definitions (6 Classes)", style={'color': '#0284c7', 'marginBottom': '16px'}),
+                        html.Table(className='table table-hover table-bordered align-middle', children=[
+                            html.Thead(className='table-light', children=[
+                                html.Tr([
+                                    html.Th("Class Code"),
+                                    html.Th("Clinical Name"),
+                                    html.Th("Medical Description"),
+                                    html.Th("Diagnostic Significance")
+                                ])
+                            ]),
+                            html.Tbody([
+                                html.Tr([
+                                    html.Td(html.Span("spsw", className="badge bg-danger fs-6")),
+                                    html.Td(html.B("Spike and Slow Wave")),
+                                    html.Td("Sharp transient (<70 ms) followed by a slow wave (200-500 ms)"),
+                                    html.Td("Focal or generalized interictal epileptiform discharges (IEDs)")
+                                ]),
+                                html.Tr([
+                                    html.Td(html.Span("gped", className="badge bg-warning text-dark fs-6")),
+                                    html.Td(html.B("Generalized Periodic Discharge")),
+                                    html.Td("Periodic waveforms appearing synchronously over both hemispheres"),
+                                    html.Td("Acute encephalopathy, status epilepticus, anoxia")
+                                ]),
+                                html.Tr([
+                                    html.Td(html.Span("pled", className="badge bg-warning text-dark fs-6")),
+                                    html.Td(html.B("Periodic Lateralized Discharge")),
+                                    html.Td("Repetitive sharp or spike wave complexes localized to one hemisphere"),
+                                    html.Td("Focal brain lesions, acute stroke, viral encephalitis")
+                                ]),
+                                html.Tr([
+                                    html.Td(html.Span("eyem", className="badge bg-success fs-6")),
+                                    html.Td(html.B("Eye Movement")),
+                                    html.Td("Low-frequency (<4 Hz) frontal signal deflections from eye blinks"),
+                                    html.Td("Non-epileptic biological artifact")
+                                ]),
+                                html.Tr([
+                                    html.Td(html.Span("artf", className="badge bg-primary fs-6")),
+                                    html.Td(html.B("Artifact")),
+                                    html.Td("High-amplitude muscle (EMG), electrode pop, or movement noise"),
+                                    html.Td("Non-cerebral electrical interference")
+                                ]),
+                                html.Tr([
+                                    html.Td(html.Span("bckg", className="badge bg-secondary fs-6")),
+                                    html.Td(html.B("Background")),
+                                    html.Td("Normal baseline cerebral rhythms (Alpha, Beta, Theta, Delta)"),
+                                    html.Td("Normal resting cerebral activity")
+                                ])
+                            ])
+                        ])
+                    ]),
+
+                    html.Div(className='help-card', children=[
+                        html.H4("⚡ 22-Channel ACNS TCP Montage Standard", style={'color': '#0284c7', 'marginBottom': '16px'}),
+                        html.P("To eliminate common reference noise, signals are computed as differential voltage pairs: V_ch = V_pos - V_neg"),
+                        html.Div(className='row', children=[
+                            html.Div(className='col-md-6', children=[
+                                html.Ul(children=[
+                                    html.Li([html.B("Left Temporal Chain: "), "FP1-F7, F7-T3, T3-T5, T5-O1"]),
+                                    html.Li([html.B("Right Temporal Chain: "), "FP2-F8, F8-T4, T4-T6, T6-O2"]),
+                                    html.Li([html.B("Parasagittal & Center Chain: "), "A1-T3, T3-C3, C3-CZ, CZ-C4, C4-T4, T4-A2"])
+                                ])
+                            ]),
+                            html.Div(className='col-md-6', children=[
+                                html.Ul(children=[
+                                    html.Li([html.B("Left Parasagittal Chain: "), "FP1-F3, F3-C3, C3-P3, P3-O1"]),
+                                    html.Li([html.B("Right Parasagittal Chain: "), "FP2-F4, F4-C4, C4-P4, P4-O2"])
+                                ])
+                            ])
+                        ])
+                    ]),
+
+                    html.Div(className='help-card', children=[
+                        html.H4("📊 Signal Processing Metrics & Formulas", style={'color': '#0284c7', 'marginBottom': '16px'}),
+                        html.Ul(children=[
+                            html.Li([html.B("Welch Power Spectral Density (PSD): "), "Estimates signal power across Delta (0.5-4Hz), Theta (4-8Hz), Alpha (8-12Hz), Beta (12-30Hz), and Gamma (30-50Hz) bands via trapezoidal integration."]),
+                            html.Li([html.B("Hjorth Activity: "), "Total signal power / variance Var(x)."]),
+                            html.Li([html.B("Hjorth Mobility: "), "Square root of variance ratio of first derivative Var(dx/dt) / Var(x). Represents mean frequency."]),
+                            html.Li([html.B("Hjorth Complexity: "), "Ratio of mobility of first derivative to mobility of signal. Represents frequency deviation."]),
+                            html.Li([html.B("Z-Score Normalization: "), "(x - mean) / std. Standardizes channel voltage amplitudes."]),
+                            html.Li([html.B("Robust Scaling: "), "(x - median) / IQR. Resilient against extreme noise artifacts."])
+                        ])
+                    ])
                 ])
             ])
         ])
     ])
 ])
 
-# Callbacks
+# Callbacks with Fast Caching
 @app.callback(
     Output('edf-file-select', 'options'),
     Output('edf-file-select', 'value'),
@@ -383,8 +491,9 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
     abs_edf = os.path.join(CORPUS_ROOT, rel_edf_path)
     rec_path = os.path.splitext(abs_edf)[0] + '.rec'
 
-    signals, fs, ch_names = read_edf_file(abs_edf)
-    events = parse_rec_file(rec_path)
+    # Fast cached reads
+    signals, fs, ch_names = cached_read_edf(abs_edf)
+    events = cached_parse_rec(rec_path)
 
     if montage_mode == 'tcp':
         display_signals, display_names = build_tcp_montage(signals, ch_names)
@@ -406,7 +515,7 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
 
     for i in range(n_channels):
         sig = display_signals[i, start_sample:stop_sample]
-        # Standardize scaling
+        # Fast scaling
         sig_scaled = (sig - np.mean(sig)) / (np.std(sig) + 1e-6) * 30.0 + (n_channels - 1 - i) * offset_spacing
 
         fig.add_trace(go.Scatter(
@@ -436,7 +545,6 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
                 annotation_font=dict(color='#0f172a', size=11, family='sans-serif')
             )
 
-    # Fixed Margins: Generous left margin (l=140) so channel labels never get clipped!
     fig.update_layout(
         template='plotly_white',
         paper_bgcolor='#ffffff',
@@ -478,7 +586,7 @@ def update_htk_plots(htk_path):
     n_samples, n_feats = features.shape
     time_sec = np.arange(n_samples) * (sample_period * 1e-7)
 
-    # Heatmap Figure (Light Theme, fixed margins)
+    # Heatmap Figure
     fig_heat = go.Figure(data=go.Heatmap(
         z=features.T,
         x=time_sec,
@@ -496,7 +604,7 @@ def update_htk_plots(htk_path):
         font=dict(color='#0f172a')
     )
 
-    # Line Plot Figure for First 3 Features (Fixed margins)
+    # Line Plot Figure for First 3 Features
     fig_line = go.Figure()
     colors = ['#0284c7', '#10b981', '#f59e0b']
     for f_idx in range(min(3, n_feats)):
@@ -533,7 +641,7 @@ def update_annotation_tables(rel_edf_path):
     base_name = os.path.splitext(os.path.basename(abs_edf))[0]
     lab_files = glob.glob(os.path.join(base_dir, f"{base_name}_ch*.lab"))
 
-    rec_events = parse_rec_file(rec_path)
+    rec_events = cached_parse_rec(rec_path)
     lab_events = []
     for lab_p in lab_files:
         lab_events.extend(parse_lab_file(lab_p))
@@ -558,8 +666,8 @@ def update_pytorch_simulation(rel_edf_path, win_sec, stride_sec, target_fs, batc
 
     abs_edf = os.path.join(CORPUS_ROOT, rel_edf_path)
     rec_path = os.path.splitext(abs_edf)[0] + '.rec'
-    events = parse_rec_file(rec_path)
-    signals, fs, ch_names = read_edf_file(abs_edf)
+    events = cached_parse_rec(rec_path)
+    signals, fs, ch_names = cached_read_edf(abs_edf)
     montage_signals, _ = build_tcp_montage(signals, ch_names)
 
     window_samples = int(win_sec * fs)
@@ -572,7 +680,6 @@ def update_pytorch_simulation(rel_edf_path, win_sec, stride_sec, target_fs, batc
     shape_x_str = f"({batch_size}, 22, {target_samples})"
     shape_y_str = f"({batch_size},)"
 
-    # Plot sample tensor batch signals (Light Theme, fixed margins)
     fig = go.Figure()
     if n_windows > 0:
         sample_win = montage_signals[:, :window_samples]
