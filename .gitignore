@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv/
+mamba_repo/
 
 # Large Datasets and Output Artifacts
 TU-v2.0.1/
