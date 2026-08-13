@@ -1,13 +1,14 @@
 """
-Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (100+ Second Fast Multi-Channel Viewer).
+Interactive Plotly Dash Dashboard for TUH EEG Event Corpus Dataset Loader (Smooth Sliding Window Transitions).
 
 Features:
-1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer (100+ second default view with fast downsampling).
-2. Color-coded Event Annotation Legend, Overlays, and Banners.
-3. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
-4. HTK Differential Energy Feature Heatmap & Line Inspector.
-5. PyTorch EEGEventDataset & DataLoader Live Simulator.
-6. Interactive Help Guide & Clinical Terminology Documentation.
+1. Multi-channel EDF Signal & ACNS TCP Montage Visualizer.
+2. Smooth Sliding Window Position Slider & Quick Step Controls PLACED DIRECTLY BELOW THE EEG GRAPH.
+3. Color-coded Event Annotation Legend, Overlays, and Banners.
+4. Annotation Inspector (.rec second-precision vs .lab microsecond-precision).
+5. HTK Differential Energy Feature Heatmap & Line Inspector.
+6. PyTorch EEGEventDataset & DataLoader Live Simulator.
+7. Interactive Help Guide & Clinical Terminology Documentation.
 """
 
 import os
@@ -21,7 +22,7 @@ from torch.utils.data import DataLoader
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import dash
-from dash import dcc, html, Input, Output, State, dash_table
+from dash import dcc, html, Input, Output, State, dash_table, callback_context
 
 from dataset_loader import (
     parse_rec_file, parse_lab_file, parse_htk_file, read_edf_file,
@@ -274,11 +275,11 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
 
                     # Beginner Guide & Event Explanation Card
                     html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#e0f2fe', 'border': '1px solid #7dd3fc'}, children=[
-                        html.H5("💡 Understanding EEG Signals & Event Labels (100+ Second View)", style={'color': '#0369a1', 'fontWeight': '700', 'marginBottom': '8px'}),
+                        html.H5("💡 Understanding EEG Signals & Event Labels", style={'color': '#0369a1', 'fontWeight': '700', 'marginBottom': '8px'}),
                         html.P(children=[
                             html.B("Blue Waves: "), "22 differential channels of brain wave voltage signals (ACNS TCP Montage). ",
                             html.Br(),
-                            html.B("Color-Coded Event Highlights & Banners: "), "Plotted across continuous 100+ second recording intervals:"
+                            html.B("Color-Coded Event Highlights & Banners: "), "Plotted across continuous recording intervals:"
                         ], style={'margin': 0, 'fontSize': '14px', 'color': '#0c4a6e'}),
                         html.Div(className='mt-2 d-flex flex-wrap gap-2', children=[
                             html.Span("🔴 spsw: Spike & Wave (Seizure IED)", className="badge bg-danger"),
@@ -290,25 +291,55 @@ app.layout = html.Div(style={'backgroundColor': '#f8fafc', 'color': '#0f172a', '
                         ])
                     ]),
 
-                    # Control Bar & Time Slider (Default: 0 - 100 seconds)
-                    html.Div(className='p-3 mb-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
-                        html.Div(className='d-flex align-items-center justify-content-between', children=[
-                            html.Span("Display Time Range (0 to 100+ Seconds):", className='fw-bold', style={'color': '#1e293b'}),
-                            html.Div(style={'width': '65%'}, children=[
-                                dcc.RangeSlider(
-                                    id='time-range-slider',
-                                    min=0, max=300, step=5, value=[0, 30],
-                                    updatemode='mouseup',
-                                    marks={0: '0s', 20: '20s', 50: '50s', 100: '100s', 200: '200s', 300: '300s'},
-                                    tooltip={'always_visible': True}
-                                )
-                            ])
-                        ])
+                    # Main EEG Signal Plot Container
+                    html.Div(className='p-2 rounded shadow-sm mb-3', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
+                        dcc.Graph(id='eeg-signal-graph', style={'height': '750px'})
                     ]),
 
-                    # Main EEG Signal Plot
-                    html.Div(className='p-2 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #e2e8f0'}, children=[
-                        dcc.Graph(id='eeg-signal-graph', style={'height': '800px'})
+                    # SLIDING WINDOW CONTROL PANEL (LOCATED DIRECTLY BELOW THE EEG GRAPH)
+                    html.Div(className='p-3 rounded shadow-sm', style={'backgroundColor': '#ffffff', 'border': '1px solid #0284c7'}, children=[
+                        html.Div(className='d-flex align-items-center justify-content-between mb-3', children=[
+                            html.Div([
+                                html.H5("🎛️ Smooth Sliding Window Position & Transition Control", className='m-0', style={'color': '#0284c7', 'fontWeight': '700'}),
+                                html.P("Slide the handle below to transition the visible window smoothly across the EEG recording", className='m-0 text-muted', style={'fontSize': '13px'})
+                            ]),
+                            html.Div(className='d-flex align-items-center gap-2', children=[
+                                html.Label("Window Width:", className='fw-bold m-0', style={'fontSize': '14px', 'color': '#1e293b'}),
+                                dcc.Dropdown(
+                                    id='window-dur-select',
+                                    options=[
+                                        {'label': '10s Window', 'value': 10},
+                                        {'label': '15s Window', 'value': 15},
+                                        {'label': '20s Window', 'value': 20},
+                                        {'label': '30s Window', 'value': 30},
+                                        {'label': '60s Window', 'value': 60},
+                                        {'label': '100s Window', 'value': 100}
+                                    ],
+                                    value=20,
+                                    clearable=False,
+                                    style={'width': '140px', 'color': '#0f172a'}
+                                )
+                            ])
+                        ]),
+
+                        # Single Handle Position Slider Below Graph
+                        html.Div(className='px-3 py-2', children=[
+                            dcc.Slider(
+                                id='window-pan-slider',
+                                min=0, max=300, step=1, value=0,
+                                updatemode='mouseup',
+                                marks={0: '0s', 30: '30s', 60: '60s', 120: '120s', 180: '180s', 240: '240s', 300: '300s'},
+                                tooltip={'always_visible': True}
+                            )
+                        ]),
+
+                        # Quick Step Transition Buttons
+                        html.Div(className='d-flex justify-content-center gap-2 mt-3', children=[
+                            html.Button("⏪ Step -10s", id='btn-prev-10', className='btn btn-outline-primary btn-sm px-3'),
+                            html.Button("◀ Step -2s", id='btn-prev-2', className='btn btn-outline-secondary btn-sm px-3'),
+                            html.Button("Step +2s ▶", id='btn-next-2', className='btn btn-outline-secondary btn-sm px-3'),
+                            html.Button("Step +10s ⏩", id='btn-next-10', className='btn btn-outline-primary btn-sm px-3')
+                        ])
                     ])
                 ]),
 
@@ -523,14 +554,44 @@ def update_htk_options(rel_edf_path):
     return options, default_val
 
 
+# Callback for Step Shift Buttons to update window position slider smoothly
+@app.callback(
+    Output('window-pan-slider', 'value'),
+    Input('btn-prev-10', 'n_clicks'),
+    Input('btn-prev-2', 'n_clicks'),
+    Input('btn-next-2', 'n_clicks'),
+    Input('btn-next-10', 'n_clicks'),
+    State('window-pan-slider', 'value')
+)
+def handle_step_buttons(btn_p10, btn_p2, btn_n2, btn_n10, current_val):
+    ctx = callback_context
+    if not ctx.triggered:
+        return current_val or 0
+
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    val = current_val or 0
+
+    if button_id == 'btn-prev-10':
+        val = max(0, val - 10)
+    elif button_id == 'btn-prev-2':
+        val = max(0, val - 2)
+    elif button_id == 'btn-next-2':
+        val = min(300, val + 2)
+    elif button_id == 'btn-next-10':
+        val = min(300, val + 10)
+
+    return val
+
+
 @app.callback(
     Output('eeg-signal-graph', 'figure'),
-    Output('time-range-slider', 'max'),
+    Output('window-pan-slider', 'max'),
     Input('edf-file-select', 'value'),
     Input('montage-mode', 'value'),
-    Input('time-range-slider', 'value')
+    Input('window-pan-slider', 'value'),
+    Input('window-dur-select', 'value')
 )
-def update_eeg_signals(rel_edf_path, montage_mode, time_range):
+def update_eeg_signals(rel_edf_path, montage_mode, pan_start_sec, win_dur_sec):
     if not rel_edf_path:
         return go.Figure(), 300
 
@@ -549,14 +610,17 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
     n_channels, total_samples = display_signals.shape
     total_sec = total_samples / fs
 
-    start_sec, stop_sec = time_range
+    start_sec = float(pan_start_sec or 0)
+    win_dur = float(win_dur_sec or 20)
+    stop_sec = min(total_sec, start_sec + win_dur)
+
     start_sample = int(start_sec * fs)
     stop_sample = int(stop_sec * fs)
     stop_sample = min(stop_sample, total_samples)
 
     t = np.linspace(start_sec, stop_sample / fs, max(1, stop_sample - start_sample))
 
-    # Fast downsampling for 100+ second view rendering
+    # Fast downsampling for smooth window rendering
     max_pts = 4000
     decim = max(1, len(t) // max_pts)
     t_plot = t[::decim]
@@ -620,7 +684,7 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
         plot_bgcolor='#ffffff',
         margin=dict(l=140, r=40, t=50, b=50),
         title=dict(
-            text=f"Continuous 100+ Second EEG Traces with Color-Coded Event Labels ({len(events_in_range)} Events Visible in Range [{start_sec:.0f}s - {stop_sec:.0f}s])",
+            text=f"Smooth Sliding Window [{start_sec:.1f}s - {stop_sec:.1f}s] ({len(events_in_range)} Events Visible)",
             font=dict(size=14, color='#0369a1')
         ),
         xaxis=dict(
@@ -650,7 +714,8 @@ def update_eeg_signals(rel_edf_path, montage_mode, time_range):
         showlegend=True
     )
 
-    return fig, max(300, int(total_sec))
+    max_pan = max(0, int(total_sec - win_dur))
+    return fig, max_pan
 
 
 @app.callback(
