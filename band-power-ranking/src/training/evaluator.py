@@ -1,0 +1,169 @@
+"""
+Downstream Evaluation Protocol for TUEV 6-Class EEG Event Classification.
+
+Computes:
+- Balanced Accuracy
+- Macro & Weighted F1-scores
+- Class-wise AUROC & AUPRC
+- Multi-class Confusion Matrix
+"""
+
+import os
+import time
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    f1_score,
+    roc_auc_score,
+    average_precision_score,
+    confusion_matrix
+)
+from typing import Dict, Any, Optional, List, Tuple
+
+from ..models.baselines import DownstreamClassificationModel
+from ..dataset.tuev_downstream_dataset import CLASS_NAMES
+
+
+class TUEVEvaluator:
+    """
+    Evaluation runner for Linear Probe and Full Fine-Tuning on TUEV.
+    """
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        embed_dim: int = 128,
+        num_classes: int = 6,
+        mode: str = "linear_probe",  # 'linear_probe' or 'fine_tune'
+        num_epochs: int = 20,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-2,
+        device: Optional[torch.device] = None,
+        save_dir: str = "checkpoints/downstream"
+    ):
+        self.mode = mode
+        self.num_epochs = num_epochs
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.num_classes = num_classes
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
+
+        self.device = device or (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
+
+        freeze = (mode == "linear_probe")
+        self.classifier_model = DownstreamClassificationModel(
+            backbone=backbone,
+            embed_dim=embed_dim,
+            num_classes=num_classes,
+            freeze_backbone=freeze
+        ).to(self.device)
+
+        # Cross-entropy with class weight option or standard CE
+        self.criterion = nn.CrossEntropyLoss()
+
+        trainable_params = [p for p in self.classifier_model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=num_epochs, eta_min=1e-6)
+
+    def train_epoch(self) -> float:
+        self.classifier_model.train()
+        total_loss = 0.0
+        n_batches = 0
+
+        for x, y in self.train_loader:
+            x, y = x.to(self.device), y.to(self.device)
+            self.optimizer.zero_grad()
+            logits = self.classifier_model(x)
+            loss = self.criterion(logits, y)
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += loss.item()
+            n_batches += 1
+
+        return total_loss / max(1, n_batches)
+
+    def evaluate(self) -> Dict[str, Any]:
+        self.classifier_model.eval()
+        all_preds = []
+        all_targets = []
+        all_probs = []
+
+        with torch.no_grad():
+            for x, y in self.val_loader:
+                x, y = x.to(self.device), y.to(self.device)
+                logits = self.classifier_model(x)
+                probs = F.softmax(logits, dim=-1)
+                preds = torch.argmax(probs, dim=-1)
+
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(y.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+
+        y_true = np.array(all_targets)
+        y_pred = np.array(all_preds)
+        y_prob = np.array(all_probs)
+
+        # Compute metrics
+        bal_acc = balanced_accuracy_score(y_true, y_pred)
+        macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        weighted_f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        conf_mat = confusion_matrix(y_true, y_pred, labels=list(range(self.num_classes)))
+
+        # One-hot encode targets for AUROC / AUPRC
+        present_classes = np.unique(y_true)
+        auroc_macro = 0.5
+        auprc_macro = 0.0
+
+        if len(present_classes) > 1:
+            try:
+                y_true_oh = np.eye(self.num_classes)[y_true]
+                auroc_macro = roc_auc_score(y_true_oh, y_prob, multi_class='ovr', average='macro')
+                auprc_macro = average_precision_score(y_true_oh, y_prob, average='macro')
+            except Exception:
+                pass
+
+        return {
+            'balanced_accuracy': float(bal_acc),
+            'macro_f1': float(macro_f1),
+            'weighted_f1': float(weighted_f1),
+            'auroc': float(auroc_macro),
+            'auprc': float(auprc_macro),
+            'confusion_matrix': conf_mat.tolist(),
+            'present_classes': present_classes.tolist()
+        }
+
+    def run(self) -> Dict[str, Any]:
+        print(f"--- Starting Downstream {self.mode.upper()} Evaluation ({self.num_epochs} epochs) ---")
+        best_val_f1 = 0.0
+        best_metrics = {}
+
+        for epoch in range(1, self.num_epochs + 1):
+            train_loss = self.train_epoch()
+            self.scheduler.step()
+
+            if epoch % 5 == 0 or epoch == self.num_epochs:
+                val_metrics = self.evaluate()
+                f1 = val_metrics['macro_f1']
+                b_acc = val_metrics['balanced_accuracy']
+
+                print(
+                    f"[{self.mode} Epoch {epoch:02d}/{self.num_epochs:02d}] "
+                    f"Train Loss: {train_loss:.4f} | "
+                    f"Bal Acc: {b_acc*100:.2f}% | "
+                    f"Macro F1: {f1:.4f} | "
+                    f"AUROC: {val_metrics['auroc']:.4f}"
+                )
+
+                if f1 >= best_val_f1:
+                    best_val_f1 = f1
+                    best_metrics = val_metrics
+
+        return best_metrics

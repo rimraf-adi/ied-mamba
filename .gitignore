@@ -20,3 +20,10 @@ ied-mamba/
 *.htk
 *.rec
 *.lab
+
+# Checkpoints and Ablation Outputs
+band-power-ranking/checkpoints/
+band-power-ranking/ablation_results/temp_ckpt/
+*.pt
+*.pth
+*.ckpt
