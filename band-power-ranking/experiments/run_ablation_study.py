@@ -20,11 +20,13 @@ import os
 import sys
 import json
 import time
+import argparse
 from typing import Optional, List, Dict, Tuple, Any
 import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
+from sklearn.model_selection import KFold
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -33,6 +35,7 @@ from src.models.ranking_heads import MultiVariantRankingModel
 from src.models.baselines import LogPSDRegressionModel
 from src.dataset.tuev_pretrain_dataset import TUEVPretrainDataset
 from src.dataset.tuev_downstream_dataset import TUEVDownstreamDataset
+from src.dataset import FastSubset
 from src.training.pretrainer import EEGPretrainer
 from src.training.evaluator import TUEVEvaluator
 
@@ -51,7 +54,8 @@ def run_experiment(
     pretrain_epochs: int = 10,
     eval_epochs: int = 15,
     synthetic_samples: int = 256,
-    embed_dim: int = 64,
+    embed_dim: int = 256,
+    patience: int = 10,
     device: Optional[torch.device] = None,
     output_dir: str = "ablation_results"
 ) -> dict:
@@ -62,8 +66,9 @@ def run_experiment(
     print(f"[ABLATION] [{model_type.upper()}] | Task: [{pretext_task}] | Loss: [{loss_type}] | Tie Margin: [{tie_margin}] | Mode: [{eval_mode}]")
     print("=" * 80)
 
-    # 1. Prepare Datasets
+    # 1. Prepare Datasets (Single Split)
     pretrain_ds = TUEVPretrainDataset(
+        data_root=r"d:\ied\TU-v2.0.1",
         window_duration_sec=4.0,
         tie_margin=tie_margin,
         use_augmentation=True,
@@ -71,19 +76,29 @@ def run_experiment(
     )
     val_sz = max(1, int(len(pretrain_ds) * 0.15))
     train_sz = len(pretrain_ds) - val_sz
-    pt_train, pt_val = random_split(pretrain_ds, [train_sz, val_sz])
-    pt_train_loader = DataLoader(pt_train, batch_size=32, shuffle=True, drop_last=True)
-    pt_val_loader = DataLoader(pt_val, batch_size=32, shuffle=False)
+    import random
+    indices = list(range(len(pretrain_ds)))
+    random.seed(42)
+    random.shuffle(indices)
+    pt_train = FastSubset(pretrain_ds, indices[:train_sz])
+    pt_val = FastSubset(pretrain_ds, indices[train_sz:])
+    pt_train_loader = DataLoader(pt_train, batch_size=512, shuffle=True, drop_last=True, num_workers=4, pin_memory=True)
+    pt_val_loader = DataLoader(pt_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
 
     downstream_ds = TUEVDownstreamDataset(
+        data_root=r"d:\ied\TU-v2.0.1",
         window_duration_sec=4.0,
-        synthetic_samples=int(synthetic_samples * 1.2)
+        synthetic_samples=synthetic_samples if synthetic_samples is None else int(synthetic_samples * 1.2)
     )
     ds_val_sz = max(1, int(len(downstream_ds) * 0.30))
     ds_train_sz = len(downstream_ds) - ds_val_sz
-    ds_train, ds_val = random_split(downstream_ds, [ds_train_sz, ds_val_sz])
-    ds_train_loader = DataLoader(ds_train, batch_size=32, shuffle=True, drop_last=True)
-    ds_val_loader = DataLoader(ds_val, batch_size=32, shuffle=False)
+    indices_ds = list(range(len(downstream_ds)))
+    random.seed(42)
+    random.shuffle(indices_ds)
+    ds_train = FastSubset(downstream_ds, indices_ds[:ds_train_sz])
+    ds_val = FastSubset(downstream_ds, indices_ds[ds_train_sz:])
+    ds_train_loader = DataLoader(ds_train, batch_size=512, shuffle=True, drop_last=True, num_workers=4, pin_memory=True)
+    ds_val_loader = DataLoader(ds_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
 
     # 2. Build Backbone
     backbone = build_backbone(model_type, num_channels=22, embed_dim=embed_dim).to(device)
@@ -92,6 +107,10 @@ def run_experiment(
     pretrain_time = 0.0
     val_rho_a = 0.0
     val_rho_c = 0.0
+
+    run_signature = f"{model_type}_{pretext_task}_{loss_type}_m{tie_margin}_dim{embed_dim}"
+    save_dir = os.path.join(output_dir, run_signature)
+    os.makedirs(save_dir, exist_ok=True)
 
     if pretext_task != 'random_init':
         is_log_psd = (pretext_task == 'log_psd')
@@ -124,10 +143,11 @@ def run_experiment(
             tie_margin=tie_margin,
             lr=5e-4,
             num_epochs=pretrain_epochs,
+            patience=patience,
             device=device,
             is_log_psd_baseline=is_log_psd,
             shuffle_negative_control=is_shuffled,
-            save_dir=os.path.join(output_dir, "temp_ckpt")
+            save_dir=os.path.join(save_dir, "temp_ckpt")
         )
         t0 = time.time()
         pt_history = pretrainer.fit()
@@ -146,8 +166,9 @@ def run_experiment(
         num_classes=6,
         mode=eval_mode,
         num_epochs=eval_epochs,
+        patience=patience,
         device=device,
-        save_dir=os.path.join(output_dir, "temp_eval")
+        save_dir=os.path.join(save_dir, "temp_eval")
     )
     t_eval0 = time.time()
     downstream_metrics = evaluator.run()
@@ -158,6 +179,7 @@ def run_experiment(
         'pretext_task': pretext_task,
         'loss_type': loss_type,
         'tie_margin': tie_margin,
+        'embed_dim': embed_dim,
         'eval_mode': eval_mode,
         'pretrain_epochs': pretrain_epochs,
         'eval_epochs': eval_epochs,
@@ -165,33 +187,37 @@ def run_experiment(
         'eval_time_sec': round(eval_time, 2),
         'pretrain_val_rho_a': round(val_rho_a, 4),
         'pretrain_val_rho_c': round(val_rho_c, 4),
+        'train_macro_f1': round(downstream_metrics.get('train_macro_f1', 0.0), 4),
+        'train_auroc': round(downstream_metrics.get('train_auroc', 0.0), 4),
         'balanced_accuracy': round(downstream_metrics['balanced_accuracy'], 4),
         'macro_f1': round(downstream_metrics['macro_f1'], 4),
         'weighted_f1': round(downstream_metrics['weighted_f1'], 4),
         'auroc': round(downstream_metrics['auroc'], 4),
         'auprc': round(downstream_metrics['auprc'], 4),
+        'train_confusion_matrix': downstream_metrics.get('train_confusion_matrix', []),
+        'val_confusion_matrix': downstream_metrics.get('confusion_matrix', []),
     }
+        
+    # Incremental streaming save
+    csv_path = os.path.join(output_dir, "ablation_benchmark_results.csv")
+    df_row = pd.DataFrame([record])
+    if not os.path.exists(csv_path):
+        df_row.to_csv(csv_path, index=False)
+    else:
+        df_row.to_csv(csv_path, mode='a', header=False, index=False)
+            
     return record
 
+import numpy as np
 
-def run_full_suite(output_dir: str = "ablation_results", fast_mode: bool = True):
+def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 15, patience: int = 10, fast_mode: bool = False):
     records = []
-    pretrain_eps = 4 if fast_mode else 12
-    eval_eps = 6 if fast_mode else 15
-    samples = 128 if fast_mode else 300
+    
+    # Force real data!
+    samples = None
 
     backbones = ["mamba", "transformer"]
-
-    # 1. Backbone & Pretext Objective Ablation (Ordinal Ranking vs Log-PSD vs Random vs Shuffled vs Variants)
-    pretext_tasks = [
-        "ordinal_all",
-        "variant_a",
-        "variant_b",
-        "variant_c",
-        "log_psd",
-        "random_init",
-        "shuffled_control"
-    ]
+    pretext_tasks = ["variant_a", "variant_c", "ordinal_all", "log_psd", "random_init"]
 
     for model in backbones:
         for p_task in pretext_tasks:
@@ -200,63 +226,15 @@ def run_full_suite(output_dir: str = "ablation_results", fast_mode: bool = True)
                 pretext_task=p_task,
                 loss_type="pairwise",
                 tie_margin=1e-3,
-                eval_mode="linear_probe",
-                pretrain_epochs=pretrain_eps,
-                eval_epochs=eval_eps,
-                synthetic_samples=samples,
-                output_dir=output_dir
-            )
-            records.append(rec)
-
-    # 2. Ranking Loss Ablation on Mamba & Transformer
-    loss_types = ["listnet", "listmle", "soft_spearman"]
-    for model in backbones:
-        for l_type in loss_types:
-            rec = run_experiment(
-                model_type=model,
-                pretext_task="ordinal_all",
-                loss_type=l_type,
-                tie_margin=1e-3,
-                eval_mode="linear_probe",
-                pretrain_epochs=pretrain_eps,
-                eval_epochs=eval_eps,
-                synthetic_samples=samples,
-                output_dir=output_dir
-            )
-            records.append(rec)
-
-    # 3. Tie Margin Ablation on Mamba
-    margins = [0.0, 1e-4, 1e-2]
-    for m in margins:
-        rec = run_experiment(
-            model_type="mamba",
-            pretext_task="ordinal_all",
-            loss_type="pairwise",
-            tie_margin=m,
-            eval_mode="linear_probe",
-            pretrain_epochs=pretrain_eps,
-            eval_epochs=eval_eps,
-            synthetic_samples=samples,
-            output_dir=output_dir
-        )
-        records.append(rec)
-
-    # 4. Fine-Tuning Protocol Ablation (Mamba & Transformer on Ordinal vs Baseline)
-    for model in backbones:
-        for p_task in ["ordinal_all", "log_psd", "random_init"]:
-            rec = run_experiment(
-                model_type=model,
-                pretext_task=p_task,
-                loss_type="pairwise",
-                tie_margin=1e-3,
+                embed_dim=256,
                 eval_mode="fine_tune",
                 pretrain_epochs=pretrain_eps,
                 eval_epochs=eval_eps,
                 synthetic_samples=samples,
+                patience=patience,
                 output_dir=output_dir
             )
             records.append(rec)
-
     # Save to DataFrame & JSON / CSV
     df = pd.DataFrame(records)
     csv_path = os.path.join(output_dir, "ablation_benchmark_results.csv")
@@ -282,4 +260,23 @@ def run_full_suite(output_dir: str = "ablation_results", fast_mode: bool = True)
 
 
 if __name__ == "__main__":
-    run_full_suite()
+    parser = argparse.ArgumentParser(description="Run EEG Ablation Study")
+    parser.add_argument("--fast", action="store_true", help="Run fast verification mode")
+    parser.add_argument("--epochs", type=int, default=15, help="Number of pretrain epochs")
+    parser.add_argument("--eval_epochs", type=int, default=15, help="Number of evaluation epochs")
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience")
+    parser.add_argument("--out_dir", type=str, default="ablation_results", help="Output directory")
+    args = parser.parse_args()
+
+    try:
+        run_full_suite(
+            output_dir=args.out_dir,
+            pretrain_eps=args.epochs,
+            eval_eps=args.eval_epochs,
+            patience=args.patience,
+            fast_mode=args.fast
+        )
+    except Exception as e:
+        import traceback
+        print("CRITICAL CRASH IN MAIN SCRIPT:", flush=True)
+        traceback.print_exc()

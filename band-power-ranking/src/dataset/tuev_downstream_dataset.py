@@ -49,12 +49,12 @@ class TUEVDownstreamDataset(Dataset):
         self.window_duration_sec = window_duration_sec
         self.stride_sec = stride_sec
         self.fs = fs
-        self.window_samples = int(window_duration_sec * fs)
-        self.stride_samples = int(stride_sec * fs)
-        self.num_channels = 22
-
-        self.windows: List[np.ndarray] = []
-        self.labels: List[int] = []
+        self.window_samples = int(window_duration_sec * self.fs)
+        self.stride_samples = int(self.window_samples) # Non-overlapping for eval
+        
+        self._windows_mmap = None
+        self._labels_mmap = None
+        self.n_samples = 0
 
         if synthetic_samples is not None and synthetic_samples > 0:
             self._generate_synthetic_downstream(synthetic_samples)
@@ -98,10 +98,37 @@ class TUEVDownstreamDataset(Dataset):
             self.windows.append(window)
             self.labels.append(cls_label)
 
+    def __getstate__(self):
+        """Exclude memmap handles from pickle so workers can lazily reopen them."""
+        state = self.__dict__.copy()
+        state['_windows_mmap'] = None
+        state['_labels_mmap'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def _ensure_loaded(self):
+        if self._windows_mmap is None:
+            self._windows_mmap = np.load(self.mmap_win_path, mmap_mode='r')
+            self._labels_mmap = np.load(self.mmap_label_path, mmap_mode='r')
+
     def _load_tuev_downstream(self, max_records: Optional[int]):
         """
-        Loads TUEV recordings and maps annotations (.rec / .lab) to window labels.
+        Loads TUEV recordings, maps annotations, and caches to disk via memmap.
         """
+        cache_dir = os.path.join(self.data_root, "cache_downstream", self.split)
+        os.makedirs(cache_dir, exist_ok=True)
+        self.mmap_win_path = os.path.join(cache_dir, "windows.npy")
+        self.mmap_label_path = os.path.join(cache_dir, "labels.npy")
+
+        if os.path.exists(self.mmap_win_path) and os.path.exists(self.mmap_label_path):
+            tmp = np.load(self.mmap_win_path, mmap_mode='r')
+            self.n_samples = tmp.shape[0]
+            del tmp
+            print(f"Loaded downstream memmap cache from {cache_dir} with {self.n_samples} samples.", flush=True)
+            return
+
         split_dir = os.path.join(self.data_root, "edf", self.split)
         if not os.path.exists(split_dir):
             split_dir = self.data_root
@@ -111,23 +138,20 @@ class TUEVDownstreamDataset(Dataset):
             edf_files = edf_files[:max_records]
 
         if len(edf_files) == 0:
-            self._generate_synthetic_downstream(128)
-            return
+            raise RuntimeError(f"No EDF files found in {split_dir}.")
 
         import sys
-        try:
-            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
-            from dataset_loader import read_edf_file, build_tcp_montage, parse_rec_file
-            from preprocessing import apply_bandpass_filter, apply_notch_filter, normalize_signals
-            can_load_edf = True
-        except Exception:
-            can_load_edf = False
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")))
+        from dataset_loader import read_edf_file, build_tcp_montage, parse_rec_file
+        from preprocessing import apply_bandpass_filter, apply_notch_filter, normalize_signals
 
-        if not can_load_edf:
-            self._generate_synthetic_downstream(128)
-            return
+        local_windows = []
+        local_labels = []
 
-        for edf_path in edf_files:
+        print(f"Found {len(edf_files)} downstream EDF files. Building memmap cache at {cache_dir}...", flush=True)
+        for idx, edf_path in enumerate(edf_files):
+            if (idx + 1) % 20 == 0 or idx == 0 or idx == len(edf_files) - 1:
+                print(f"[{idx+1}/{len(edf_files)}] Downstream Loading: {os.path.basename(edf_path)}", flush=True)
             try:
                 sig, fs, ch_names = read_edf_file(edf_path)
                 montage_sig, _ = build_tcp_montage(sig, ch_names)
@@ -145,28 +169,36 @@ class TUEVDownstreamDataset(Dataset):
                     win_start_sec = start_idx / self.fs
                     win_stop_sec = (start_idx + self.window_samples) / self.fs
 
-                    # Determine dominant event in this window
-                    win_label = 0  # BCKG by default
+                    win_label = 0
                     for ev in events:
-                        # Check overlap
                         if ev['start_sec'] < win_stop_sec and ev['stop_sec'] > win_start_sec:
                             if ev['label_id'] > 0:
                                 win_label = ev['label_id']
                                 break
 
-                    self.windows.append(win)
-                    self.labels.append(win_label)
+                    local_windows.append(win)
+                    local_labels.append(win_label)
             except Exception:
                 continue
 
-        if len(self.windows) == 0:
-            self._generate_synthetic_downstream(128)
+        if len(local_windows) == 0:
+            raise RuntimeError(f"Failed to load any valid EEG windows.")
+
+        print("Saving lists to downstream memmap cache...", flush=True)
+        win_arr = np.stack(local_windows).astype(np.float32)
+        lbl_arr = np.array(local_labels, dtype=np.int64)
+        self.n_samples = win_arr.shape[0]
+        np.save(self.mmap_win_path, win_arr)
+        np.save(self.mmap_label_path, lbl_arr)
+        del local_windows, local_labels, win_arr, lbl_arr
+        print(f"Successfully cached {self.n_samples} downstream samples.", flush=True)
 
     def __len__(self) -> int:
-        return len(self.windows)
+        return self.n_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        self._ensure_loaded()
         return (
-            torch.from_numpy(self.windows[idx]).float(),
-            torch.tensor(self.labels[idx], dtype=torch.long)
+            torch.from_numpy(self._windows_mmap[idx].copy()).float(),
+            torch.tensor(self._labels_mmap[idx].item(), dtype=torch.long)
         )

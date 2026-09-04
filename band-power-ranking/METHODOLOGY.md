@@ -134,9 +134,20 @@ The study standardizes all signal processing, architectural, and optimization pa
 ### Signal Processing & Time Instants
 - **Sampling Rate ($f_s$)**: 250 Hz (Standard TUEV resampling rate).
 - **Time Instants (Window Length)**: Each fundamental time window ($T$) spans **4.0 seconds**, which equates to exactly **1,000 samples** per channel.
-- **Variant B Sequence Length**: For temporal drift ranking, the model processes a sequence of **4 consecutive windows** ($K=4$), representing 16 total seconds of continuous EEG context.
+- **Stride**: The dataset uses a sliding window shifting forward by a **2.0-second stride** (500 samples), iterating continuously across the entire raw unannotated signal.
 - **Montage**: 22 channels (Standard ACNS TCP derivation).
 - **PSD Extraction**: Welch's method with 1.0-second segments (`nperseg=250`) and 50% overlap.
+
+### Iteration & Target Mechanics
+To clarify exactly how the variants ingest the raw sliding windows:
+- **Variant A (Spatial Target)**: Predicts a channel ranking for **every single one of the 5 canonical bands** independently per sliding window. No bands are ignored; the network must generate 5 distinct spatial ranking lists per step.
+- **Variant B (Temporal Target)**: Fetches a continuous sequence of **4 consecutive overlapping windows** (16 total seconds of context) starting from the current sliding position. Because the dataloader slides across the entire length of the recording, *every* continuous time window eventually serves as the starting point of a sequence, completely mapping the chronological drift of the file without skipping segments.
+- **Variant C (Spectral Target)**: Evaluates the multi-band shape for **every single time window** as the dataloader continuously traverses the recording.
+
+### Downstream Annotation Processing
+During pretraining, labels are entirely ignored. During downstream evaluation, the sliding window logic remains identical. When parsing `.rec` or `.lab` annotation files (which provide event start/stop timestamps like `[12.5s, 16.0s]: GPED`), the dataloader checks if any clinical event temporally *overlaps* with the bounds of the current 4.0-second chunk. 
+- If a pathological event overlaps, the window inherits that label.
+- If no pathological event overlaps, the window defaults to Class 0 (`BCKG` - Background).
 
 ### Backbone Architecture Dimensions
 All backbones are unified to maintain identical representational capacity.

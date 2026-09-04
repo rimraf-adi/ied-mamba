@@ -41,6 +41,7 @@ class EEGPretrainer:
         device: Optional[torch.device] = None,
         is_log_psd_baseline: bool = False,
         shuffle_negative_control: bool = False,
+        patience: int = 10,
         save_dir: str = "checkpoints/pretrain"
     ):
         self.model = model
@@ -51,6 +52,7 @@ class EEGPretrainer:
         self.num_epochs = num_epochs
         self.warmup_epochs = warmup_epochs
         self.grad_clip_norm = grad_clip_norm
+        self.patience = patience
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
 
@@ -108,46 +110,58 @@ class EEGPretrainer:
         total_loss = 0.0
         n_batches = 0
         epoch_metrics: Dict[str, float] = {}
+        t0_batch = time.time()
 
-        for batch in self.train_loader:
-            x_win = batch['window'].to(self.device)
-            seq_win = batch['seq_windows'].to(self.device) if 'seq_windows' in batch else None
+        for batch_idx, batch in enumerate(self.train_loader):
+            try:
+                self.optimizer.zero_grad()
 
-            self.optimizer.zero_grad()
+                if self.is_log_psd_baseline:
+                    x_win = batch['window'].to(self.device)
+                    target_log_psd = batch['log_psd'].to(self.device)
+                    pred_log_psd, _ = self.model(x_win)
+                    loss = self.regression_loss_fn(pred_log_psd, target_log_psd)
+                else:
+                    x_win = batch['window'].to(self.device)
+                    seq_win = batch['seq_windows'].to(self.device) if 'seq_windows' in batch else None
+                    targets_a = {k: v.to(self.device) for k, v in batch['targets_a'].items()}
+                    targets_b = {k: v.to(self.device) for k, v in batch['targets_b'].items()}
+                    targets_c = {k: v.to(self.device) for k, v in batch['targets_c'].items()}
 
-            if self.is_log_psd_baseline:
-                target_log_psd = batch['log_psd'].to(self.device)
-                pred_log_psd, _ = self.model(x_win)
-                loss = self.regression_loss_fn(pred_log_psd, target_log_psd)
-            else:
-                targets_a = {k: v.to(self.device) for k, v in batch['targets_a'].items()}
-                targets_b = {k: v.to(self.device) for k, v in batch['targets_b'].items()}
-                targets_c = {k: v.to(self.device) for k, v in batch['targets_c'].items()}
+                    if self.shuffle_negative_control:
+                        targets_a = self._shuffle_targets(targets_a)
+                        targets_b = self._shuffle_targets(targets_b)
+                        targets_c = self._shuffle_targets(targets_c)
 
-                if self.shuffle_negative_control:
-                    targets_a = self._shuffle_targets(targets_a)
-                    targets_b = self._shuffle_targets(targets_b)
-                    targets_c = self._shuffle_targets(targets_c)
+                    out = self.model(x_win, seq_win)
+                    loss, step_metrics = self.ranking_loss_fn(
+                        preds_a=out['scores_a'],
+                        targets_a=targets_a,
+                        preds_b=out['scores_b'],
+                        targets_b=targets_b,
+                        preds_c=out['scores_c'],
+                        targets_c=targets_c
+                    )
+                    for k, v in step_metrics.items():
+                        epoch_metrics[k] = epoch_metrics.get(k, 0.0) + v
 
-                out = self.model(x_win, seq_win)
-                loss, step_metrics = self.ranking_loss_fn(
-                    preds_a=out['scores_a'],
-                    targets_a=targets_a,
-                    preds_b=out['scores_b'],
-                    targets_b=targets_b,
-                    preds_c=out['scores_c'],
-                    targets_c=targets_c
-                )
-                for k, v in step_metrics.items():
-                    epoch_metrics[k] = epoch_metrics.get(k, 0.0) + v
+                loss.backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
 
-            loss.backward()
-            if self.grad_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+                total_loss += loss.item()
+                n_batches += 1
 
-            self.optimizer.step()
-            total_loss += loss.item()
-            n_batches += 1
+                if batch_idx > 0 and batch_idx % 50 == 0:
+                    elapsed_batch = time.time() - t0_batch
+                    print(f"      [Batch {n_batches}] Current Loss: {loss.item():.4f} | Time since last: {elapsed_batch:.2f}s", flush=True)
+                    t0_batch = time.time()
+            except Exception as e:
+                import traceback
+                print(f"Exception during batch processing: {e}", flush=True)
+                traceback.print_exc()
+                raise e
 
         avg_loss = total_loss / max(1, n_batches)
         res = {'train_loss': avg_loss}
@@ -192,9 +206,29 @@ class EEGPretrainer:
 
     def fit(self) -> Dict[str, Any]:
         print(f"Starting Pretraining on {self.device} | Epochs: {self.num_epochs} | Baseline: {self.is_log_psd_baseline}")
-        best_metric = -1.0 if not self.is_log_psd_baseline else 1e9
+        best_metric = 1e9 if self.is_log_psd_baseline else -1.0
+        patience_counter = 0
+        ckpt_path = os.path.join(self.save_dir, "pretrained_encoder.pt")
 
-        for epoch in range(1, self.num_epochs + 1):
+        start_epoch = 1
+        import glob
+        import re
+        existing_ckpts = glob.glob(os.path.join(self.save_dir, "pretrained_encoder_ep*.pt"))
+        if existing_ckpts:
+            ep_nums = []
+            for ckpt in existing_ckpts:
+                m = re.search(r"pretrained_encoder_ep(\d+)\.pt", ckpt)
+                if m:
+                    ep_nums.append((int(m.group(1)), ckpt))
+            if ep_nums:
+                ep_nums.sort(key=lambda x: x[0])
+                latest_ep, latest_ckpt = ep_nums[-1]
+                print(f"Resuming from checkpoint: {latest_ckpt} (Epoch {latest_ep})", flush=True)
+                backbone = self.model.backbone if hasattr(self.model, 'backbone') else self.model
+                backbone.load_state_dict(torch.load(latest_ckpt, map_location=self.device, weights_only=True))
+                start_epoch = latest_ep + 1
+
+        for epoch in range(start_epoch, self.num_epochs + 1):
             t0 = time.time()
             train_stats = self.train_epoch(epoch)
 
@@ -221,13 +255,41 @@ class EEGPretrainer:
                 f"Loss: {train_stats['train_loss']:.4f} | "
                 f"Val Rho A: {val_rho_a:.3f} | "
                 f"Val Rho C: {val_rho_c:.3f} | "
-                f"Time: {elapsed:.2f}s"
+                f"Time: {elapsed:.2f}s",
+                flush=True
             )
 
-        # Save final checkpoint
-        ckpt_path = os.path.join(self.save_dir, "pretrained_encoder.pt")
-        backbone = self.model.backbone if hasattr(self.model, 'backbone') else self.model
-        torch.save(backbone.state_dict(), ckpt_path)
-        print(f"Saved pretrained encoder checkpoint to: {ckpt_path}")
+            # Save epoch checkpoint
+            epoch_ckpt_path = os.path.join(self.save_dir, f"pretrained_encoder_ep{epoch:02d}.pt")
+            backbone = self.model.backbone if hasattr(self.model, 'backbone') else self.model
+            torch.save(backbone.state_dict(), epoch_ckpt_path)
 
+            # Early Stopping and Checkpointing Logic
+            current_metric = val_stats.get('val_loss', train_stats['train_loss']) if self.is_log_psd_baseline else (val_rho_a + val_rho_c)
+            improved = (current_metric < best_metric) if self.is_log_psd_baseline else (current_metric > best_metric)
+
+            if improved:
+                best_metric = current_metric
+                patience_counter = 0
+                backbone = self.model.backbone if hasattr(self.model, 'backbone') else self.model
+                torch.save(backbone.state_dict(), ckpt_path)
+            else:
+                patience_counter += 1
+                if patience_counter >= self.patience:
+                    print(f"Early stopping triggered at epoch {epoch}. Restoring best checkpoint.")
+                    if os.path.exists(ckpt_path):
+                        backbone = self.model.backbone if hasattr(self.model, 'backbone') else self.model
+                        backbone.load_state_dict(torch.load(ckpt_path, map_location=self.device, weights_only=True))
+                    break
+
+        print(f"Pretraining finished. Best model checkpoint saved to: {ckpt_path}")
+        
+        # Cleanup all epoch-wise checkpoints to save disk space
+        import glob
+        for ep_ckpt in glob.glob(os.path.join(self.save_dir, "pretrained_encoder_ep*.pt")):
+            try:
+                os.remove(ep_ckpt)
+            except OSError:
+                pass
+                
         return self.history

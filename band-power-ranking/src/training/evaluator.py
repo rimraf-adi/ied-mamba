@@ -44,6 +44,7 @@ class TUEVEvaluator:
         num_epochs: int = 20,
         lr: float = 1e-3,
         weight_decay: float = 1e-2,
+        patience: int = 10,
         device: Optional[torch.device] = None,
         save_dir: str = "checkpoints/downstream"
     ):
@@ -52,6 +53,10 @@ class TUEVEvaluator:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.num_classes = num_classes
+        self.num_epochs = num_epochs
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.patience = patience
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
 
@@ -90,14 +95,15 @@ class TUEVEvaluator:
 
         return total_loss / max(1, n_batches)
 
-    def evaluate(self) -> Dict[str, Any]:
+    def evaluate(self, loader: Optional[DataLoader] = None) -> Dict[str, Any]:
         self.classifier_model.eval()
+        loader = loader or self.val_loader
         all_preds = []
         all_targets = []
         all_probs = []
 
         with torch.no_grad():
-            for x, y in self.val_loader:
+            for x, y in loader:
                 x, y = x.to(self.device), y.to(self.device)
                 logits = self.classifier_model(x)
                 probs = F.softmax(logits, dim=-1)
@@ -142,28 +148,41 @@ class TUEVEvaluator:
 
     def run(self) -> Dict[str, Any]:
         print(f"--- Starting Downstream {self.mode.upper()} Evaluation ({self.num_epochs} epochs) ---")
-        best_val_f1 = 0.0
+        best_val_f1 = -1.0
         best_metrics = {}
+        patience_counter = 0
 
         for epoch in range(1, self.num_epochs + 1):
             train_loss = self.train_epoch()
             self.scheduler.step()
 
-            if epoch % 5 == 0 or epoch == self.num_epochs:
-                val_metrics = self.evaluate()
-                f1 = val_metrics['macro_f1']
-                b_acc = val_metrics['balanced_accuracy']
+            # Evaluate every epoch for accurate patience tracking
+            val_metrics = self.evaluate()
+            f1 = val_metrics['macro_f1']
+            b_acc = val_metrics['balanced_accuracy']
 
-                print(
-                    f"[{self.mode} Epoch {epoch:02d}/{self.num_epochs:02d}] "
-                    f"Train Loss: {train_loss:.4f} | "
-                    f"Bal Acc: {b_acc*100:.2f}% | "
-                    f"Macro F1: {f1:.4f} | "
-                    f"AUROC: {val_metrics['auroc']:.4f}"
-                )
+            print(
+                f"[{self.mode} Epoch {epoch:02d}/{self.num_epochs:02d}] "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Bal Acc: {b_acc*100:.2f}% | "
+                f"Macro F1: {f1:.4f} | "
+                f"AUROC: {val_metrics['auroc']:.4f}"
+            )
 
-                if f1 >= best_val_f1:
-                    best_val_f1 = f1
-                    best_metrics = val_metrics
+            if f1 > best_val_f1:
+                best_val_f1 = f1
+                best_metrics = val_metrics
+                patience_counter = 0
+                
+                # Also record train metrics at the best validation checkpoint
+                train_metrics = self.evaluate(loader=self.train_loader)
+                best_metrics['train_macro_f1'] = train_metrics['macro_f1']
+                best_metrics['train_auroc'] = train_metrics['auroc']
+                best_metrics['train_confusion_matrix'] = train_metrics['confusion_matrix']
+            else:
+                patience_counter += 1
+                if patience_counter >= self.patience:
+                    print(f"Early stopping triggered at epoch {epoch}. Best Val Macro F1: {best_val_f1:.4f} | Best Train Macro F1: {best_metrics.get('train_macro_f1', 0.0):.4f}")
+                    break
 
         return best_metrics

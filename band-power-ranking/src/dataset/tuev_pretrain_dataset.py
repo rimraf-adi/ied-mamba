@@ -61,8 +61,9 @@ class TUEVPretrainDataset(Dataset):
         self.target_builder = RankTargetBuilder(tie_margin=tie_margin)
         self.augmenter = EEGRankAugmenter() if use_augmentation else None
 
-        self.windows: List[np.ndarray] = []
-        self.band_powers: List[np.ndarray] = []
+        self._windows_mmap = None
+        self._bps_mmap = None
+        self.n_samples = 0
 
         if synthetic_samples is not None and synthetic_samples > 0:
             self._generate_synthetic_data(synthetic_samples)
@@ -99,13 +100,39 @@ class TUEVPretrainDataset(Dataset):
             self.windows.append(window)
             self.band_powers.append(bp)
 
+    def __getstate__(self):
+        """Exclude memmap handles from pickle so workers can lazily reopen them."""
+        state = self.__dict__.copy()
+        state['_windows_mmap'] = None
+        state['_bps_mmap'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def _ensure_loaded(self):
+        if self._windows_mmap is None:
+            self._windows_mmap = np.load(self.mmap_win_path, mmap_mode='r')
+            self._bps_mmap = np.load(self.mmap_bp_path, mmap_mode='r')
+
     def _load_tuev_data(self, max_records: Optional[int]):
         """
-        Scans EDF files in TUEV corpus, preprocesses, and extracts sliding windows.
+        Scans EDF files in TUEV corpus, preprocesses, extracts sliding windows, and saves them to a disk memmap cache.
         """
+        cache_dir = os.path.join(self.data_root, "cache", self.split)
+        os.makedirs(cache_dir, exist_ok=True)
+        self.mmap_win_path = os.path.join(cache_dir, "windows.npy")
+        self.mmap_bp_path = os.path.join(cache_dir, "bps.npy")
+
+        if os.path.exists(self.mmap_win_path) and os.path.exists(self.mmap_bp_path):
+            tmp = np.load(self.mmap_win_path, mmap_mode='r')
+            self.n_samples = tmp.shape[0]
+            del tmp
+            print(f"Loaded memmap cache from {cache_dir} with {self.n_samples} samples.", flush=True)
+            return
+
         split_dir = os.path.join(self.data_root, "edf", self.split)
         if not os.path.exists(split_dir):
-            # Fallback to general root or generate synthetic
             split_dir = self.data_root
 
         edf_files = glob.glob(os.path.join(split_dir, "**", "*.edf"), recursive=True)
@@ -113,35 +140,28 @@ class TUEVPretrainDataset(Dataset):
             edf_files = edf_files[:max_records]
 
         if len(edf_files) == 0:
-            # Fallback to 128 synthetic windows if no EDF files are found in path
-            self._generate_synthetic_data(128)
-            return
+            raise RuntimeError(f"No EDF files found in {split_dir}.")
 
         import sys
-        # Attempt to import root dataset_loader and preprocessing
-        try:
-            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
-            from dataset_loader import read_edf_file, build_tcp_montage
-            from preprocessing import apply_bandpass_filter, apply_notch_filter, normalize_signals
-            can_load_edf = True
-        except Exception:
-            can_load_edf = False
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")))
+        from dataset_loader import read_edf_file, build_tcp_montage
+        from preprocessing import apply_bandpass_filter, apply_notch_filter, normalize_signals
 
-        if not can_load_edf:
-            self._generate_synthetic_data(128)
-            return
+        local_windows = []
+        local_bps = []
 
-        for edf_path in edf_files:
+        print(f"Found {len(edf_files)} EDF files. Building memmap cache at {cache_dir}...", flush=True)
+        for idx, edf_path in enumerate(edf_files):
+            if (idx + 1) % 20 == 0 or idx == 0 or idx == len(edf_files) - 1:
+                print(f"[{idx+1}/{len(edf_files)}] Loading: {os.path.basename(edf_path)}", flush=True)
             try:
                 sig, fs, ch_names = read_edf_file(edf_path)
                 montage_sig, _ = build_tcp_montage(sig, ch_names)
                 
-                # Filter 0.5 - 45 Hz & notch 60 Hz
                 filtered = apply_bandpass_filter(montage_sig, fs, lowcut=0.5, highcut=45.0)
                 notched = apply_notch_filter(filtered, fs, freq=60.0)
                 normed = normalize_signals(notched, method='zscore')
 
-                # Resample to target_fs if needed
                 if abs(fs - self.fs) > 1.0:
                     from scipy.signal import resample
                     target_len = int(normed.shape[1] * self.fs / fs)
@@ -151,26 +171,36 @@ class TUEVPretrainDataset(Dataset):
                 for start_idx in range(0, n_samples - self.window_samples + 1, self.stride_samples):
                     win = normed[:, start_idx : start_idx + self.window_samples]
                     bp = self.psd_extractor.extract(win)
-                    self.windows.append(win)
-                    self.band_powers.append(bp)
+                    local_windows.append(win)
+                    local_bps.append(bp)
             except Exception:
                 continue
 
-        if len(self.windows) == 0:
-            self._generate_synthetic_data(128)
+        if len(local_windows) == 0:
+            raise RuntimeError(f"Failed to load any valid EEG windows.")
+
+        print("Saving lists to memmap cache...", flush=True)
+        win_arr = np.stack(local_windows).astype(np.float32)
+        bp_arr = np.stack(local_bps).astype(np.float32)
+        self.n_samples = win_arr.shape[0]
+        np.save(self.mmap_win_path, win_arr)
+        np.save(self.mmap_bp_path, bp_arr)
+        del local_windows, local_bps, win_arr, bp_arr
+        print(f"Successfully cached {self.n_samples} samples.", flush=True)
 
     def __len__(self) -> int:
-        return len(self.windows)
+        return self.n_samples
 
     def __getitem__(self, idx: int) -> Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]:
-        window = self.windows[idx].copy()
+        self._ensure_loaded()
+        window = self._windows_mmap[idx].copy()
         
         # Apply augmentation if configured
         if self.augmenter is not None:
             window = self.augmenter(window)
             bp = self.psd_extractor.extract(window)
         else:
-            bp = self.band_powers[idx]
+            bp = self._bps_mmap[idx].copy()
 
         # Targets for Variant A (Spatial cross-channel)
         targ_a_np = self.target_builder.build_variant_a_targets(bp)
@@ -182,10 +212,10 @@ class TUEVPretrainDataset(Dataset):
         seq_wins = []
         seq_bps = []
         for offset in range(seq_len):
-            s_idx = (idx + offset) % len(self.windows)
-            s_win = self.windows[s_idx]
+            s_idx = (idx + offset) % self.n_samples
+            s_win = self._windows_mmap[s_idx].copy()
             seq_wins.append(s_win)
-            seq_bps.append(self.band_powers[s_idx])
+            seq_bps.append(self._bps_mmap[s_idx].copy())
 
         seq_wins_arr = np.stack(seq_wins, axis=0)  # (seq_len, C, in_samples)
         seq_bps_arr = np.stack(seq_bps, axis=0)    # (seq_len, C, num_bands)
