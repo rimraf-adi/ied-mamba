@@ -77,6 +77,9 @@ def run_experiment(
     val_sz = max(1, int(len(pretrain_ds) * 0.15))
     train_sz = len(pretrain_ds) - val_sz
     import random
+    import numpy as np
+    from torch.utils.data import WeightedRandomSampler
+    
     indices = list(range(len(pretrain_ds)))
     random.seed(42)
     random.shuffle(indices)
@@ -85,20 +88,12 @@ def run_experiment(
     pt_train_loader = DataLoader(pt_train, batch_size=512, shuffle=True, drop_last=True, num_workers=4, pin_memory=True)
     pt_val_loader = DataLoader(pt_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
 
-    downstream_ds = TUEVDownstreamDataset(
+    # Downstream dataset parameters are defined here; instantiated per task later.
+    ds_kwargs = dict(
         data_root=r"d:\ied\TU-v2.0.1",
         window_duration_sec=4.0,
         synthetic_samples=synthetic_samples if synthetic_samples is None else int(synthetic_samples * 1.2)
     )
-    ds_val_sz = max(1, int(len(downstream_ds) * 0.30))
-    ds_train_sz = len(downstream_ds) - ds_val_sz
-    indices_ds = list(range(len(downstream_ds)))
-    random.seed(42)
-    random.shuffle(indices_ds)
-    ds_train = FastSubset(downstream_ds, indices_ds[:ds_train_sz])
-    ds_val = FastSubset(downstream_ds, indices_ds[ds_train_sz:])
-    ds_train_loader = DataLoader(ds_train, batch_size=512, shuffle=True, drop_last=True, num_workers=4, pin_memory=True)
-    ds_val_loader = DataLoader(ds_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
 
     # 2. Build Backbone
     backbone = build_backbone(model_type, num_channels=22, embed_dim=embed_dim).to(device)
@@ -157,22 +152,65 @@ def run_experiment(
         if pt_history['val_spearman_c']:
             val_rho_c = pt_history['val_spearman_c'][-1]
 
-    # 4. Downstream Evaluation
-    evaluator = TUEVEvaluator(
-        backbone=backbone,
-        train_loader=ds_train_loader,
-        val_loader=ds_val_loader,
-        embed_dim=embed_dim,
-        num_classes=6,
-        mode=eval_mode,
-        num_epochs=eval_epochs,
-        patience=patience,
-        device=device,
-        save_dir=os.path.join(save_dir, "temp_eval")
-    )
-    t_eval0 = time.time()
-    downstream_metrics = evaluator.run()
-    eval_time = time.time() - t_eval0
+    # 4. Downstream Evaluation (Three-Pronged Protocol)
+    eval_tasks = [
+        ("detection", 2),
+        ("typing", 5)
+    ]
+    
+    downstream_metrics = {}
+    eval_time = 0.0
+    
+    for task_name, num_cls in eval_tasks:
+        print(f"\n--- Running Downstream Task: {task_name.upper()} ---")
+        curr_ds = TUEVDownstreamDataset(**ds_kwargs, task_mode=task_name)
+        ds_val_sz = max(1, int(len(curr_ds) * 0.30))
+        ds_train_sz = len(curr_ds) - ds_val_sz
+        
+        # Use same random seed for consistency across tasks
+        curr_indices = list(range(len(curr_ds)))
+        random.seed(42)
+        random.shuffle(curr_indices)
+        
+        curr_train = FastSubset(curr_ds, curr_indices[:ds_train_sz])
+        curr_val = FastSubset(curr_ds, curr_indices[ds_train_sz:])
+        
+        ds_train_labels = []
+        curr_ds._ensure_loaded()
+        for ds_idx in curr_train.indices:
+            real_idx = curr_ds._valid_indices[ds_idx] if hasattr(curr_ds, '_valid_indices') else ds_idx
+            lbl = curr_ds._labels_mmap[real_idx].item()
+            if task_name == "typing" and lbl > 0: lbl -= 1
+            if task_name == "detection" and lbl > 0: lbl = 1
+            ds_train_labels.append(lbl)
+        curr_ds._labels_mmap = None
+        curr_ds._windows_mmap = None
+        
+        class_counts = np.bincount(ds_train_labels)
+        class_weights = 1.0 / (class_counts + 1e-6)
+        sample_weights = [class_weights[l] for l in ds_train_labels]
+        sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+        
+        curr_train_loader = DataLoader(curr_train, batch_size=512, sampler=sampler, drop_last=False, num_workers=4, pin_memory=True)
+        curr_val_loader = DataLoader(curr_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
+        
+        evaluator = TUEVEvaluator(
+            backbone=backbone,
+            train_loader=curr_train_loader,
+            val_loader=curr_val_loader,
+            embed_dim=embed_dim,
+            num_classes=num_cls,
+            mode=eval_mode,
+            num_epochs=eval_epochs,
+            patience=patience,
+            device=device,
+            save_dir=os.path.join(save_dir, f"temp_eval_{task_name}")
+        )
+        
+        t_eval0 = time.time()
+        metrics = evaluator.run()
+        eval_time += (time.time() - t_eval0)
+        downstream_metrics[task_name] = metrics
 
     record = {
         'model_type': model_type,
@@ -187,17 +225,17 @@ def run_experiment(
         'eval_time_sec': round(eval_time, 2),
         'pretrain_val_rho_a': round(val_rho_a, 4),
         'pretrain_val_rho_c': round(val_rho_c, 4),
-        'train_macro_f1': round(downstream_metrics.get('train_macro_f1', 0.0), 4),
-        'train_auroc': round(downstream_metrics.get('train_auroc', 0.0), 4),
-        'balanced_accuracy': round(downstream_metrics['balanced_accuracy'], 4),
-        'macro_f1': round(downstream_metrics['macro_f1'], 4),
-        'weighted_f1': round(downstream_metrics['weighted_f1'], 4),
-        'auroc': round(downstream_metrics['auroc'], 4),
-        'auprc': round(downstream_metrics['auprc'], 4),
-        'train_confusion_matrix': downstream_metrics.get('train_confusion_matrix', []),
-        'val_confusion_matrix': downstream_metrics.get('confusion_matrix', []),
+        # Detection Metrics
+        'detect_auroc': round(downstream_metrics['detection']['auroc'], 4),
+        'detect_prauc': round(downstream_metrics['detection']['auprc'], 4),
+        'detect_macro_f1': round(downstream_metrics['detection']['macro_f1'], 4),
+        # Typing Metrics (Background excluded)
+        'type_weighted_f1': round(downstream_metrics['typing']['weighted_f1'], 4),
+        'type_macro_f1': round(downstream_metrics['typing']['macro_f1'], 4),
     }
-        
+    import json
+    with open(os.path.join(save_dir, "detailed_metrics.json"), "w") as f:
+        json.dump(downstream_metrics, f, indent=2)
     # Incremental streaming save
     csv_path = os.path.join(output_dir, "ablation_benchmark_results.csv")
     df_row = pd.DataFrame([record])
@@ -216,8 +254,8 @@ def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 15, 
     # Force real data!
     samples = None
 
-    backbones = ["mamba", "transformer"]
-    pretext_tasks = ["variant_a", "variant_c", "ordinal_all", "log_psd", "random_init"]
+    backbones = ["mamba"]
+    pretext_tasks = ["variant_c"]
 
     for model in backbones:
         for p_task in pretext_tasks:
@@ -226,7 +264,7 @@ def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 15, 
                 pretext_task=p_task,
                 loss_type="pairwise",
                 tie_margin=1e-3,
-                embed_dim=256,
+                embed_dim=512,
                 eval_mode="fine_tune",
                 pretrain_epochs=pretrain_eps,
                 eval_epochs=eval_eps,

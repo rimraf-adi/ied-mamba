@@ -26,145 +26,95 @@ We extract standard Welch PSD and integrate it across 5 canonical clinical frequ
 - $\beta$ (13 - 30 Hz): Active thinking, motor activity
 - $\gamma$ (30 - 45 Hz): High cognitive processing
 
-Based on these bands, we define three orthogonal variants of the pretext task.
-
-### 🧠 Conceptual Dry Run
-
-Let's assume a simplified scenario to understand how the tensors and targets work. 
-Imagine an EEG segment with **3 channels** (e.g., `O1`, `C3`, `Fp1`), **2 bands** ($\alpha, \delta$), and **2 time windows** ($T_1, T_2$).
-
-**Raw PSD Extracted (Log Scale for Illustration)**:
-- $T_1$: 
-  - `O1`: $\alpha=10.5, \delta=2.0$
-  - `C3`: $\alpha=5.1, \delta=4.0$
-  - `Fp1`: $\alpha=2.0, \delta=8.5$
-- $T_2$: 
-  - `O1`: $\alpha=11.2, \delta=1.5$
-  - `C3`: $\alpha=6.0, \delta=3.8$
-  - `Fp1`: $\alpha=1.5, \delta=9.0$
-
-How do the three variants create self-supervised ranking targets out of this matrix?
-
----
+Based on these bands, we evaluate two orthogonal variants of the pretext task.
 
 ### Variant A: Spatial Topography (Cross-Channel)
 - **Goal**: Rank the EEG channels for a specific frequency band at a single point in time.
 - **Why**: Certain rhythms are highly localized. For example, Alpha rhythms are predominantly occipital (back of the head). By forcing the model to reconstruct this spatial gradient, it intrinsically maps the 2D topography of the scalp.
-- **Dry Run Example (Band = $\alpha$, Window = $T_1$)**:
-  - The PSD values are: `O1` (10.5), `C3` (5.1), `Fp1` (2.0)
-  - The model does **not** predict the raw numbers (10.5, 5.1, 2.0).
-  - Instead, the target is the rank descending order: `O1` > `C3` > `Fp1` (Rank indices: `0, 1, 2`).
-  - If the model predicts a score of `4.0` for `O1`, `2.1` for `C3`, and `-1.0` for `Fp1`, its predicted ranking perfectly matches the true rank, yielding a loss of zero, even though its raw predicted numbers don't match the PSD values.
+- **Target Construction**: The model computes the descending rank order of all 22 channels (e.g., `O1` > `C3` > `Fp1`) independently for all 5 bands.
 
-### Variant B: Temporal Drift (Cross-Time / Multi-Window Scenario)
-- **Goal**: Rank a continuous sequence of non-overlapping time windows for a fixed channel and band.
-- **Why**: Clinical conditions like seizures (sz) or periodic discharges (PLEDs) evolve over time. Predicting which window holds the most power forces the model to capture non-stationary temporal dynamics and state transitions, instead of treating each 4-second window as an isolated snapshot.
-- **The Multi-Window Mechanics (Channel = `O1`, Band = $\alpha$)**:
-  - Suppose we feed the model a sequence of $K=4$ consecutive windows: $T_1, T_2, T_3, T_4$.
-  - The extracted PSD values for this sequence are: $T_1 (10.5), T_2 (11.2), T_3 (9.1), T_4 (12.0)$.
-  - **Target Construction**: The model looks across the *temporal sequence dimension*. The target ranking is sorted descending: $T_4 > T_2 > T_1 > T_3$.
-  - **Model Execution**: The backbone processes all 4 windows, pooling the temporal sequence latent vectors. The scoring head outputs a single scalar score per window. If the predicted scores are $S_{T_1}=0.5, S_{T_2}=1.2, S_{T_3}=-0.3, S_{T_4}=2.5$, the model correctly deduced the temporal drift sequence (the predicted ranking $2.5 > 1.2 > 0.5 > -0.3$ perfectly matches $T_4 > T_2 > T_1 > T_3$).
-
-### Variant C: Spectral Profile (Cross-Band / Multi-Band Scenario)
+### Variant C: Spectral Profile (Cross-Band)
 - **Goal**: Rank the multiple frequency bands for a single channel in a single time window.
 - **Why**: Recognizing whether a specific brain region is dominated by slow-wave $\delta$ (abnormal focal slowing) versus fast $\beta$ activity (awake state) requires understanding the internal spectral profile of a single electrode. It forces the encoder to recognize the *shape* of the frequency spectrum independently of amplitude.
-- **The Multi-Band Mechanics (Channel = `Fp1`, Window = $T_1$)**:
-  - The model considers all 5 canonical bands simultaneously: $\delta, \theta, \alpha, \beta, \gamma$.
-  - Suppose the raw PSD values are: $\delta (8.5), \theta (4.1), \alpha (2.0), \beta (1.5), \gamma (0.2)$.
-  - **Target Construction**: The model looks across the *frequency band dimension*. The target ranking descending order is: $\delta > \theta > \alpha > \beta > \gamma$.
-  - **Model Execution**: The backbone generates the latent embedding for the `Fp1` channel. This latent vector is fed into 5 distinct band-specific scoring heads (or conditioned on band embeddings). The model must output 5 scores. To achieve zero loss, the model must assign the highest scalar score to the $\delta$ head and the lowest to the $\gamma$ head, thus successfully reconstructing the relative multi-band spectral shape.
+- **Target Construction**: The model looks across the frequency band dimension, reconstructing the descending rank of the 5 canonical bands (e.g., $\delta > \theta > \alpha > \beta > \gamma$) for each channel.
 
 ---
 
 ## 3. High-Capacity Model Architectures
 
-The framework uses an embed dimension of `256`, standard for production-scale EEG foundation models (like BIOT or LaBraM). The pipeline supports two state-of-the-art backbones:
+The framework uses a high-capacity embedding dimension of `512` to ensure sufficient representational space for production-scale EEG foundation modeling. The primary backbone evaluated in this suite is:
 
-### 1. Spatial-Temporal Transformer
-- **Architecture**: A multi-channel 1D temporal convolution front-end projects raw EEG samples into a sequence of latent tokens. These tokens are processed by 4 stacked Multi-Head Self-Attention layers (`num_heads=8`, `dim_feedforward=512`).
-- **Characteristics**: Global receptive field via self-attention, but computationally scales quadratically $O(N^2)$ with sequence length.
-
-### 2. Mamba (Selective State Space Model)
-- **Architecture**: Employs the `mamba_ssm` (Mamba-2 SSD) blocks. It uses the same temporal convolution front-end but replaces self-attention with hardware-aware parallel state-space recurrence (`d_state=64`, `expand=2`).
-- **Characteristics**: Matches or exceeds Transformer quality but operates with linear time complexity $O(N)$, significantly reducing memory overhead on long EEG continuous recordings.
+### Mamba (Selective State Space Model)
+- **Architecture**: Employs the `mamba_ssm` (Mamba-2 SSD) blocks preceded by a multi-channel 1D temporal convolution front-end. It uses hardware-aware parallel state-space recurrence (`d_state=64`, `expand=2`).
+- **Characteristics**: Achieves equivalent or superior quality to Transformers but operates with linear time complexity $O(N)$, drastically reducing memory overhead on long, continuous EEG recordings.
 
 ---
 
 ## 4. Differentiable Ranking Loss Functions
 
-Since absolute ranks are non-differentiable step functions, the pipeline integrates several differentiable surrogates:
+Since absolute ranks are non-differentiable step functions, the pipeline integrates a differentiable surrogate:
 
-1. **Pairwise RankNet (with Tie Margin)**
-   - Decomposes the ranking task into $N(N-1)/2$ pairwise comparisons.
-   - Evaluates a log-sigmoid cross-entropy loss: $L_{ij} = -\bar{P}_{ij} \log P_{ij} - (1 - \bar{P}_{ij}) \log(1 - P_{ij})$.
-   - **Tie Margin ($\delta_{\text{margin}}$)**: A critical innovation to prevent the model from fighting over microscopic noise differences. If the true power difference between channel $i$ and $j$ is $< \delta_{\text{margin}}$, the pair is masked out and excluded from the loss.
-
-2. **Listwise Approaches (ListNet & ListMLE)**
-   - **ListNet**: Treats the ranking scores as a probability distribution over the top-1 element (via Softmax) and uses Cross-Entropy against the true distribution.
-   - **ListMLE**: Utilizes the Plackett-Luce model for permutations, evaluating the negative log-likelihood of the true descending rank permutation.
-
-3. **Soft-Spearman**
-   - Applies a continuous, differentiable sort operator (via soft-rank projections) to compute a differentiable approximation of the Spearman $\rho$ correlation, which acts directly as the loss.
+**Pairwise RankNet (with Tie Margin)**
+- Decomposes the ranking task into $N(N-1)/2$ pairwise comparisons.
+- Evaluates a log-sigmoid cross-entropy loss: $L_{ij} = -\bar{P}_{ij} \log P_{ij} - (1 - \bar{P}_{ij}) \log(1 - P_{ij})$.
+- **Tie Margin ($\delta_{\text{margin}}$)**: A critical innovation to prevent the model from fighting over microscopic noise differences. If the true power difference between channel $i$ and $j$ is $< \delta_{\text{margin}}$, the pair is masked out and excluded from the loss.
 
 ---
 
-## 5. Downstream Evaluation on TUEV
+## 5. Downstream Evaluation: Two-Stage Clinical Protocol
 
-To measure the quality of representations learned by the pretext tasks, the pre-trained encoder is frozen and attached to a **Linear Probe** evaluation head on the **TUEV Event Classification Dataset**.
+To measure the clinical utility of the pretext tasks, the pre-trained encoder is Fine-Tuned (or probed) on the **TUEV Event Classification Dataset**.
 
-- **Classes (6)**: 
-  - `SPSW`: Spike and Slow Wave (Seizure biomarker)
+Following established literature conventions for TUSZ/TUEV benchmarks, the pipeline isolates evaluation into a strict **Two-Stage Protocol**. This prevents extreme majority-class (Background) inflation from masking true seizure-typing performance.
+
+### Stage 1: Detection Task (Binary)
+- **Objective**: Classify segments as Seizure/Event (`1`) vs. Background/Normal (`0`).
+- **Classes**: 2
+- **Metrics Evaluated**: AUROC and PR-AUC. (PR-AUC is prioritized due to extreme class imbalance).
+
+### Stage 2: Typing Task (5-Class Multiclass)
+- **Objective**: Conditioned on a segment being an event (Background explicitly excluded), classify the specific morphological subtype.
+- **Classes**:
+  - `SPSW`: Spike and Slow Wave (Seizure biomarker - Rare class, ~17 train samples)
   - `GPED`: Generalized Periodic Epileptiform Discharges
   - `PLED`: Periodic Lateralized Epileptiform Discharges
   - `EYEM`: Eye Movement (Artifact)
   - `ARTF`: Chewing/Muscle Artifact
-  - `BCKG`: Background / Normal Activity
+- **Metrics Evaluated**: Macro F1-Score, Weighted F1-Score, and per-class PR-AUC.
 
-- **Metrics**: 
-  - Because clinical events are rare, standard accuracy is misleading. 
-  - We log **Macro F1-Score**, **Balanced Accuracy**, and **AUROC** as primary validation metrics. 
-  - The pipeline compares the Ordinal Ranking performance against a direct Log-PSD regression baseline, random untrained weights, and a shuffled-rank negative control.
+### Handling Extreme Imbalance
+Due to the rarity of certain clinical events (e.g., SPSW), standard Cross-Entropy collapses the network. We employ two critical deep-learning equivalents to SMOTE:
+1. **Focal Loss ($\gamma=2.0$)**: Dynamically scales gradients down for easy majority examples (e.g., standard artifacts), forcing the network to optimize for hard minority events.
+2. **Weighted Random Sampling (Stratified Batches)**: Upsamples minority classes dynamically during training by drawing samples with replacement inversely proportional to their class frequency, guaranteeing rare events appear in every batch.
 
 ---
 
 ## 6. Hyperparameters and Experimental Settings
 
-The study standardizes all signal processing, architectural, and optimization parameters to ensure fair comparisons between the pretext tasks and backbones.
+The study standardizes all signal processing, architectural, and optimization parameters to ensure fair comparisons.
 
 ### Signal Processing & Time Instants
 - **Sampling Rate ($f_s$)**: 250 Hz (Standard TUEV resampling rate).
-- **Time Instants (Window Length)**: Each fundamental time window ($T$) spans **4.0 seconds**, which equates to exactly **1,000 samples** per channel.
-- **Stride**: The dataset uses a sliding window shifting forward by a **2.0-second stride** (500 samples), iterating continuously across the entire raw unannotated signal.
+- **Time Instants (Window Length)**: **4.0 seconds** (1,000 samples).
+- **Stride**: **2.0-second stride** (500 samples), iterating continuously across the raw unannotated signal.
 - **Montage**: 22 channels (Standard ACNS TCP derivation).
 - **PSD Extraction**: Welch's method with 1.0-second segments (`nperseg=250`) and 50% overlap.
 
-### Iteration & Target Mechanics
-To clarify exactly how the variants ingest the raw sliding windows:
-- **Variant A (Spatial Target)**: Predicts a channel ranking for **every single one of the 5 canonical bands** independently per sliding window. No bands are ignored; the network must generate 5 distinct spatial ranking lists per step.
-- **Variant B (Temporal Target)**: Fetches a continuous sequence of **4 consecutive overlapping windows** (16 total seconds of context) starting from the current sliding position. Because the dataloader slides across the entire length of the recording, *every* continuous time window eventually serves as the starting point of a sequence, completely mapping the chronological drift of the file without skipping segments.
-- **Variant C (Spectral Target)**: Evaluates the multi-band shape for **every single time window** as the dataloader continuously traverses the recording.
-
-### Downstream Annotation Processing
-During pretraining, labels are entirely ignored. During downstream evaluation, the sliding window logic remains identical. When parsing `.rec` or `.lab` annotation files (which provide event start/stop timestamps like `[12.5s, 16.0s]: GPED`), the dataloader checks if any clinical event temporally *overlaps* with the bounds of the current 4.0-second chunk. 
-- If a pathological event overlaps, the window inherits that label.
-- If no pathological event overlaps, the window defaults to Class 0 (`BCKG` - Background).
+### Multiprocessing Deadlock Prevention
+To prevent OS-level deadlocks in Windows `spawn` multiprocessing workers, `memmap` numpy file handlers are strictly decoupled from the Dataset's pickling state via explicit `__getstate__` and `__setstate__` overrides. The memmap files are lazily loaded by worker threads upon their first access.
 
 ### Backbone Architecture Dimensions
-All backbones are unified to maintain identical representational capacity.
-- **Base Embedding Dimension (`embed_dim`)**: 256
+- **Base Embedding Dimension (`embed_dim`)**: 512
 - **Number of Encoder Layers**: 4
 - **Dropout**: 0.1
 - **Mamba (SSM) Specifics**: 
   - State Dimension (`d_state`): 64
-  - Expansion Factor (`expand`): 2 (yielding an inner dimension of 512)
+  - Expansion Factor (`expand`): 2 (yielding an inner dimension of 1024)
   - Convolution Kernel (`d_conv`): 4
-- **Transformer Specifics**:
-  - Attention Heads (`num_heads`): 8
-  - Feed-Forward Dimension (`dim_feedforward`): 512
 
 ### Loss Formulation & Optimization
-- **Tie-Margin ($\delta_{\text{margin}}$)**: $1 \times 10^{-3}$ (Used in Pairwise RankNet to gate noise).
-- **Pretraining Epochs**: 30 Epochs.
-- **Downstream Linear Probe Epochs**: 15 Epochs (Frozen Encoder).
+- **Tie-Margin ($\delta_{\text{margin}}$)**: $1 \times 10^{-3}$.
+- **Epochs**: Pretraining 50 Epochs | Downstream Fine-Tuning 50 Epochs.
+- **Early Stopping Patience**: 10 Epochs.
 - **Optimizer**: AdamW (`weight_decay=1e-2`).
-- **Learning Rates**: Pretraining at $1 \times 10^{-4}$, Linear Probe at $1 \times 10^{-3}$.
+- **Data Export**: Outputs are streamed to an aggregate CSV and to detailed JSON artifacts nested by variant.

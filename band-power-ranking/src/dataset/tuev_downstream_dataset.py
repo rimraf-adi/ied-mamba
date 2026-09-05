@@ -18,15 +18,14 @@ from torch.utils.data import Dataset
 from typing import List, Dict, Tuple, Optional, Union
 
 LABEL_MAP = {
-    'bckg': 0,
-    'spsw': 1,
-    'gped': 2,
-    'pled': 3,
-    'eyem': 4,
-    'artf': 5,
+    'spsw': 0,
+    'gped': 1,
+    'pled': 2,
+    'eyem': 3,
+    'artf': 4,
 }
 
-CLASS_NAMES = ['BCKG', 'SPSW', 'GPED', 'PLED', 'EYEM', 'ARTF']
+CLASS_NAMES = ['SPSW', 'GPED', 'PLED', 'EYEM', 'ARTF']
 
 
 class TUEVDownstreamDataset(Dataset):
@@ -42,13 +41,15 @@ class TUEVDownstreamDataset(Dataset):
         stride_sec: float = 2.0,
         fs: float = 250.0,
         max_records: Optional[int] = None,
-        synthetic_samples: Optional[int] = None
+        synthetic_samples: Optional[int] = None,
+        task_mode: str = "joint"
     ):
         self.data_root = data_root
         self.split = split
         self.window_duration_sec = window_duration_sec
         self.stride_sec = stride_sec
         self.fs = fs
+        self.task_mode = task_mode
         self.window_samples = int(window_duration_sec * self.fs)
         self.stride_samples = int(self.window_samples) # Non-overlapping for eval
         
@@ -60,6 +61,19 @@ class TUEVDownstreamDataset(Dataset):
             self._generate_synthetic_downstream(synthetic_samples)
         else:
             self._load_tuev_downstream(max_records)
+        # Filter based on task mode
+        self._ensure_loaded()
+        all_labels = self._labels_mmap[:]
+        if self.task_mode == "typing":
+            self._valid_indices = np.where(all_labels > 0)[0]
+        else:
+            self._valid_indices = np.arange(len(all_labels))
+        self.n_samples = len(self._valid_indices)
+        
+        # Reset mmap handlers so workers don't serialize them
+        self._windows_mmap = None
+        self._labels_mmap = None
+
 
     def _generate_synthetic_downstream(self, n_samples: int):
         """
@@ -198,7 +212,21 @@ class TUEVDownstreamDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         self._ensure_loaded()
+        if hasattr(self, '_valid_indices'):
+            real_idx = self._valid_indices[idx]
+        else:
+            real_idx = idx
+            
+        # Adjust label based on task mode
+        label = self._labels_mmap[real_idx].item()
+        if self.task_mode == "typing":
+            if label > 0:
+                label -= 1
+        elif self.task_mode == "detection":
+            if label > 0:
+                label = 1
+                
         return (
-            torch.from_numpy(self._windows_mmap[idx].copy()).float(),
-            torch.tensor(self._labels_mmap[idx].item(), dtype=torch.long)
+            torch.from_numpy(self._windows_mmap[real_idx].copy()).float(),
+            torch.tensor(label, dtype=torch.long)
         )

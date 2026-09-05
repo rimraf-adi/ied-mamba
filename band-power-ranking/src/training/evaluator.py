@@ -14,6 +14,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0):
+        super().__init__()
+        self.gamma = gamma
+        
+    def forward(self, logits, targets):
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        return (((1 - pt) ** self.gamma) * ce_loss).mean()
 from torch.utils.data import DataLoader
 from sklearn.metrics import (
     balanced_accuracy_score,
@@ -67,11 +77,12 @@ class TUEVEvaluator:
             backbone=backbone,
             embed_dim=embed_dim,
             num_classes=num_classes,
-            freeze_backbone=freeze
+            freeze_backbone=freeze,
+            use_mlp_head=True
         ).to(self.device)
 
-        # Cross-entropy with class weight option or standard CE
-        self.criterion = nn.CrossEntropyLoss()
+        # Use Focal Loss for heavy class imbalance
+        self.criterion = FocalLoss(gamma=2.0)
 
         trainable_params = [p for p in self.classifier_model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
@@ -97,7 +108,8 @@ class TUEVEvaluator:
 
     def evaluate(self, loader: Optional[DataLoader] = None) -> Dict[str, Any]:
         self.classifier_model.eval()
-        loader = loader or self.val_loader
+        if loader is None:
+            loader = self.val_loader
         all_preds = []
         all_targets = []
         all_probs = []
@@ -130,9 +142,14 @@ class TUEVEvaluator:
 
         if len(present_classes) > 1:
             try:
-                y_true_oh = np.eye(self.num_classes)[y_true]
-                auroc_macro = roc_auc_score(y_true_oh, y_prob, multi_class='ovr', average='macro')
-                auprc_macro = average_precision_score(y_true_oh, y_prob, average='macro')
+                if self.num_classes == 2:
+                    y_prob_positive = y_prob[:, 1]
+                    auroc_macro = roc_auc_score(y_true, y_prob_positive)
+                    auprc_macro = average_precision_score(y_true, y_prob_positive)
+                else:
+                    y_true_oh = np.eye(self.num_classes)[y_true]
+                    auroc_macro = roc_auc_score(y_true_oh, y_prob, multi_class='ovr', average='macro')
+                    auprc_macro = average_precision_score(y_true_oh, y_prob, average='macro')
             except Exception:
                 pass
 
@@ -166,6 +183,7 @@ class TUEVEvaluator:
                 f"Train Loss: {train_loss:.4f} | "
                 f"Bal Acc: {b_acc*100:.2f}% | "
                 f"Macro F1: {f1:.4f} | "
+                f"PR-AUC: {val_metrics['auprc']:.4f} | "
                 f"AUROC: {val_metrics['auroc']:.4f}"
             )
 

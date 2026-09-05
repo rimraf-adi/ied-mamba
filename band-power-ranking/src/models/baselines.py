@@ -66,11 +66,16 @@ class DownstreamClassificationModel(nn.Module):
                 param.requires_grad = False
 
         if use_mlp_head:
-            hidden_dim = max(64, embed_dim // 2)
+            hidden_dim = embed_dim
             self.classifier = nn.Sequential(
                 nn.Linear(embed_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
                 nn.GELU(),
-                nn.Dropout(0.2),
+                nn.Dropout(0.3),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(0.3),
                 nn.Linear(hidden_dim, num_classes)
             )
         else:
