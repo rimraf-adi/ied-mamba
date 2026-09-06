@@ -6,16 +6,16 @@
     "tie_margin": 0.001,
     "embed_dim": 512,
     "eval_mode": "fine_tune",
-    "pretrain_epochs": 50,
-    "eval_epochs": 50,
-    "pretrain_time_sec": 65880.49,
-    "eval_time_sec": 2619.86,
+    "pretrain_epochs": 15,
+    "eval_epochs": 15,
+    "pretrain_time_sec": 25291.61,
+    "eval_time_sec": 3579.47,
     "pretrain_val_rho_a": 0.0,
-    "pretrain_val_rho_c": 0.9381,
-    "detect_auroc": 0.6908,
-    "detect_prauc": 0.0381,
-    "detect_macro_f1": 0.5275,
-    "type_weighted_f1": 0.4247,
-    "type_macro_f1": 0.361
+    "pretrain_val_rho_c": 0.9257,
+    "detect_auroc": 0.7102,
+    "detect_prauc": 0.0373,
+    "detect_macro_f1": 0.5212,
+    "type_weighted_f1": 0.5867,
+    "type_macro_f1": 0.5153
   }
 ]
