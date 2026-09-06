@@ -1,2 +1,2 @@
-model_type,pretext_task,loss_type,tie_margin,embed_dim,eval_mode,pretrain_epochs,eval_epochs,pretrain_time_sec,eval_time_sec,pretrain_val_rho_a,pretrain_val_rho_c,detect_auroc,detect_prauc,detect_macro_f1,type_weighted_f1,type_macro_f1,typing_auroc,typing_prauc,balanced_accuracy,macro_f1
-mamba,variant_a,pairwise,0.001,512,fine_tune,50,50,62649.89,1853.07,0.9656,0.0,0.6918,0.0684,0.5792,0.1173,0.0965,0.9925,0.9567,0.9286,0.9414
+model_type,pretext_task,loss_type,tie_margin,embed_dim,eval_mode,pretrain_epochs,eval_epochs,pretrain_time_sec,eval_time_sec,pretrain_val_rho_a,pretrain_val_rho_c,detect_auroc,detect_prauc,detect_macro_f1,type_weighted_f1,type_macro_f1
+mamba,variant_c,pairwise,0.001,512,fine_tune,50,50,65880.49,2619.86,0.0,0.9381,0.6908,0.0381,0.5275,0.4247,0.361

@@ -163,35 +163,25 @@ def run_experiment(
     
     for task_name, num_cls in eval_tasks:
         print(f"\n--- Running Downstream Task: {task_name.upper()} ---")
-        curr_ds = TUEVDownstreamDataset(**ds_kwargs, task_mode=task_name)
-        ds_val_sz = max(1, int(len(curr_ds) * 0.30))
-        ds_train_sz = len(curr_ds) - ds_val_sz
-        
-        # Use same random seed for consistency across tasks
-        curr_indices = list(range(len(curr_ds)))
-        random.seed(42)
-        random.shuffle(curr_indices)
-        
-        curr_train = FastSubset(curr_ds, curr_indices[:ds_train_sz])
-        curr_val = FastSubset(curr_ds, curr_indices[ds_train_sz:])
+        curr_train = TUEVDownstreamDataset(**ds_kwargs, split="train", task_mode=task_name)
+        curr_val = TUEVDownstreamDataset(**ds_kwargs, split="eval", task_mode=task_name)
         
         ds_train_labels = []
-        curr_ds._ensure_loaded()
-        for ds_idx in curr_train.indices:
-            real_idx = curr_ds._valid_indices[ds_idx] if hasattr(curr_ds, '_valid_indices') else ds_idx
-            lbl = curr_ds._labels_mmap[real_idx].item()
+        curr_train._ensure_loaded()
+        for i in range(len(curr_train)):
+            real_idx = curr_train._valid_indices[i] if hasattr(curr_train, '_valid_indices') else i
+            lbl = curr_train._labels_mmap[real_idx].item()
             if task_name == "typing" and lbl > 0: lbl -= 1
             if task_name == "detection" and lbl > 0: lbl = 1
             ds_train_labels.append(lbl)
-        curr_ds._labels_mmap = None
-        curr_ds._windows_mmap = None
+            
+        curr_train._labels_mmap = None
+        curr_train._windows_mmap = None
+        curr_val._ensure_loaded()
+        curr_val._labels_mmap = None
+        curr_val._windows_mmap = None
         
-        class_counts = np.bincount(ds_train_labels)
-        class_weights = 1.0 / (class_counts + 1e-6)
-        sample_weights = [class_weights[l] for l in ds_train_labels]
-        sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
-        
-        curr_train_loader = DataLoader(curr_train, batch_size=512, sampler=sampler, drop_last=False, num_workers=4, pin_memory=True)
+        curr_train_loader = DataLoader(curr_train, batch_size=512, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
         curr_val_loader = DataLoader(curr_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
         
         evaluator = TUEVEvaluator(

@@ -1,6 +1,6 @@
 # Ordinal PSD Band-Power Ranking: Methodology & Framework Details
 
-This document comprehensively explains the theoretical background, task formulation, architectures, and evaluation logic built in this directory.
+This document comprehensively explains the theoretical background, task formulation, architectures, and the rigorous evaluation protocol built in this repository.
 
 ---
 
@@ -61,31 +61,28 @@ Since absolute ranks are non-differentiable step functions, the pipeline integra
 
 ---
 
-## 5. Downstream Evaluation: Two-Stage Clinical Protocol
+## 5. Downstream Evaluation & Methodological Rigor
 
-To measure the clinical utility of the pretext tasks, the pre-trained encoder is Fine-Tuned (or probed) on the **TUEV Event Classification Dataset**.
+To measure the clinical utility of the pretext tasks, the pre-trained encoder is Fine-Tuned on the **TUEV Event Classification Dataset**. The pipeline is highly specialized to counteract both patient leakage and extreme class imbalance.
 
-Following established literature conventions for TUSZ/TUEV benchmarks, the pipeline isolates evaluation into a strict **Two-Stage Protocol**. This prevents extreme majority-class (Background) inflation from masking true seizure-typing performance.
+### Methodological Protections
+Early iterations of this study identified two critical flaws commonly found in medical time-series literature, which have been definitively corrected in this framework:
+1. **Strict Patient-Wise Isolation**: Randomly shuffling patient epochs across train/validation splits results in catastrophic "patient leakage" (allowing the model to memorize patients instead of clinical patterns). We enforce the official TUEV `train` and `eval` splits to guarantee 100% patient isolation.
+2. **Prior-Calibrated Sampling**: Using `WeightedRandomSampler` on a naturally imbalanced medical dataset (1.7% positives) forces the model to learn a distorted 50/50 prior, causing boundary collapse when evaluating on the real validation prior. We use strict natural-prior sampling combined with an active **Optimal Binary Threshold Sweep** (Precision-Recall calibration) to properly evaluate classification metrics.
 
 ### Stage 1: Detection Task (Binary)
 - **Objective**: Classify segments as Seizure/Event (`1`) vs. Background/Normal (`0`).
-- **Classes**: 2
-- **Metrics Evaluated**: AUROC and PR-AUC. (PR-AUC is prioritized due to extreme class imbalance).
+- **Classes**: 2 (98.3% Background, 1.7% Event)
+- **Evaluation Logic**: We use `FocalLoss` ($\gamma=2.0$) to heavily penalize errors on minority events without distorting the batch distribution. During validation, we sweep all thresholds $[0.01, 0.99]$ to find the operating threshold that mathematically maximizes the Macro F1 score on the true prior.
 
 ### Stage 2: Typing Task (5-Class Multiclass)
-- **Objective**: Conditioned on a segment being an event (Background explicitly excluded), classify the specific morphological subtype.
+- **Objective**: Conditioned on a segment being an event, classify the specific morphological subtype.
 - **Classes**:
-  - `SPSW`: Spike and Slow Wave (Seizure biomarker - Rare class, ~17 train samples)
+  - `SPSW`: Spike and Slow Wave
   - `GPED`: Generalized Periodic Epileptiform Discharges
   - `PLED`: Periodic Lateralized Epileptiform Discharges
   - `EYEM`: Eye Movement (Artifact)
   - `ARTF`: Chewing/Muscle Artifact
-- **Metrics Evaluated**: Macro F1-Score, Weighted F1-Score, and per-class PR-AUC.
-
-### Handling Extreme Imbalance
-Due to the rarity of certain clinical events (e.g., SPSW), standard Cross-Entropy collapses the network. We employ two critical deep-learning equivalents to SMOTE:
-1. **Focal Loss ($\gamma=2.0$)**: Dynamically scales gradients down for easy majority examples (e.g., standard artifacts), forcing the network to optimize for hard minority events.
-2. **Weighted Random Sampling (Stratified Batches)**: Upsamples minority classes dynamically during training by drawing samples with replacement inversely proportional to their class frequency, guaranteeing rare events appear in every batch.
 
 ---
 

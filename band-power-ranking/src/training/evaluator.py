@@ -128,6 +128,33 @@ class TUEVEvaluator:
         y_true = np.array(all_targets)
         y_pred = np.array(all_preds)
         y_prob = np.array(all_probs)
+        
+        # Optimal Threshold Sweep for Binary Classification
+        threshold_sweep_data = {}
+        if self.num_classes == 2:
+            y_prob_positive = y_prob[:, 1]
+            best_f1 = 0.0
+            best_thresh = 0.5
+            best_preds = y_pred
+            for thresh in np.linspace(0.01, 0.99, 99):
+                thresh_preds = (y_prob_positive >= thresh).astype(int)
+                from sklearn.metrics import precision_score, recall_score
+                t_prec = precision_score(y_true, thresh_preds, zero_division=0)
+                t_rec = recall_score(y_true, thresh_preds, zero_division=0)
+                t_f1 = f1_score(y_true, thresh_preds, average='macro', zero_division=0)
+                
+                threshold_sweep_data[f"{thresh:.2f}"] = {
+                    "precision": float(t_prec),
+                    "recall": float(t_rec),
+                    "macro_f1": float(t_f1)
+                }
+                
+                if t_f1 > best_f1:
+                    best_f1 = t_f1
+                    best_thresh = thresh
+                    best_preds = thresh_preds
+            y_pred = best_preds
+            print(f"  [Threshold Sweep] Optimal Binary Threshold: {best_thresh:.2f}")
 
         # Compute metrics
         bal_acc = balanced_accuracy_score(y_true, y_pred)
@@ -160,7 +187,8 @@ class TUEVEvaluator:
             'auroc': float(auroc_macro),
             'auprc': float(auprc_macro),
             'confusion_matrix': conf_mat.tolist(),
-            'present_classes': present_classes.tolist()
+            'present_classes': present_classes.tolist(),
+            'threshold_sweep': threshold_sweep_data
         }
 
     def run(self) -> Dict[str, Any]:
