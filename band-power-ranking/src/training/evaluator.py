@@ -16,14 +16,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class FocalLoss(nn.Module):
-    def __init__(self, gamma=2.0):
+    def __init__(self, gamma=2.0, alpha=None):
         super().__init__()
         self.gamma = gamma
+        self.alpha = alpha
         
     def forward(self, logits, targets):
         ce_loss = F.cross_entropy(logits, targets, reduction='none')
         pt = torch.exp(-ce_loss)
-        return (((1 - pt) ** self.gamma) * ce_loss).mean()
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        if self.alpha is not None:
+            alpha_tensor = self.alpha.to(targets.device)
+            at = alpha_tensor.gather(0, targets)
+            focal_loss = focal_loss * at
+        return focal_loss.mean()
 from torch.utils.data import DataLoader
 from sklearn.metrics import (
     balanced_accuracy_score,
@@ -81,11 +87,47 @@ class TUEVEvaluator:
             use_mlp_head=True
         ).to(self.device)
 
-        # Use Focal Loss for heavy class imbalance
-        self.criterion = FocalLoss(gamma=2.0)
+        # Compute Inverse Class Frequencies for Alpha Weighting
+        # IMPORTANT: Must remap labels the same way __getitem__ does, so alpha matches the actual classes.
+        try:
+            raw_labels = np.load(self.train_loader.dataset.mmap_label_path, mmap_mode='r')
+            # Apply the same remapping as __getitem__
+            task_mode = getattr(self.train_loader.dataset, 'task_mode', 'joint')
+            if task_mode == "detection":
+                remapped = (raw_labels > 0).astype(np.int64)
+            elif task_mode == "typing":
+                valid_mask = raw_labels > 0
+                remapped = raw_labels[valid_mask] - 1
+            else:
+                remapped = raw_labels
+            class_counts = np.bincount(remapped, minlength=num_classes)
+            class_weights = 1.0 / (class_counts + 1e-8)
+            alpha = torch.tensor(class_weights, dtype=torch.float32)
+            alpha = alpha / alpha.sum()
+            print(f"  [Alpha Weights] Class counts: {class_counts.tolist()} | Alpha: {[f'{a:.4f}' for a in alpha.tolist()]}")
+        except Exception as e:
+            print(f"  [Alpha Weights] Failed to compute: {e}")
+            alpha = None
 
-        trainable_params = [p for p in self.classifier_model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+        # Use Focal Loss for heavy class imbalance
+        self.criterion = FocalLoss(gamma=2.0, alpha=alpha)
+
+        # Bug #3 Fix: Discriminative Learning Rates
+        # Backbone LR = lr/50 to prevent catastrophic forgetting of pretrained representations.
+        # MLP Head LR = lr (full speed, randomly initialized).
+        backbone_params = [p for p in self.classifier_model.backbone.parameters() if p.requires_grad]
+        head_params = [p for p in self.classifier_model.classifier.parameters() if p.requires_grad]
+        
+        if freeze:
+            # Linear probe: only head params, single LR
+            self.optimizer = torch.optim.AdamW(head_params, lr=lr, weight_decay=weight_decay)
+        else:
+            # Fine-tune: discriminative LR
+            param_groups = [
+                {'params': backbone_params, 'lr': lr / 50},  # 2e-5 by default
+                {'params': head_params, 'lr': lr}             # 1e-3
+            ]
+            self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=num_epochs, eta_min=1e-6)
 
     def train_epoch(self) -> float:
@@ -136,7 +178,7 @@ class TUEVEvaluator:
             best_f1 = 0.0
             best_thresh = 0.5
             best_preds = y_pred
-            for thresh in np.linspace(0.01, 0.99, 99):
+            for thresh in np.linspace(0.40, 0.60, 21):
                 thresh_preds = (y_prob_positive >= thresh).astype(int)
                 from sklearn.metrics import precision_score, recall_score
                 t_prec = precision_score(y_true, thresh_preds, zero_division=0)

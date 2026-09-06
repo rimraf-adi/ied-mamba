@@ -51,7 +51,7 @@ class TUEVDownstreamDataset(Dataset):
         self.fs = fs
         self.task_mode = task_mode
         self.window_samples = int(window_duration_sec * self.fs)
-        self.stride_samples = int(self.window_samples) # Non-overlapping for eval
+        self.stride_samples = int(stride_sec * self.fs)  # Use actual stride parameter (default 2s overlap)
         
         self._windows_mmap = None
         self._labels_mmap = None

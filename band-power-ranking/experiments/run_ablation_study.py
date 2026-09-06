@@ -163,6 +163,15 @@ def run_experiment(
     
     for task_name, num_cls in eval_tasks:
         print(f"\n--- Running Downstream Task: {task_name.upper()} ---")
+        
+        # Bug #4 Fix: Reload pretrained backbone from checkpoint before each task.
+        # This prevents Detection fine-tuning from corrupting the backbone for Typing.
+        pretrained_ckpt = os.path.join(save_dir, "temp_ckpt", "pretrained_encoder.pt")
+        if os.path.exists(pretrained_ckpt) and pretext_task not in ('random_init',):
+            print(f"  Reloading pretrained backbone from: {pretrained_ckpt}")
+            backbone = build_backbone(model_type, num_channels=22, embed_dim=embed_dim).to(device)
+            backbone.load_state_dict(torch.load(pretrained_ckpt, map_location=device))
+        
         curr_train = TUEVDownstreamDataset(**ds_kwargs, split="train", task_mode=task_name)
         curr_val = TUEVDownstreamDataset(**ds_kwargs, split="eval", task_mode=task_name)
         
