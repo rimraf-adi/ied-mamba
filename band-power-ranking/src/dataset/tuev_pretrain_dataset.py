@@ -161,6 +161,9 @@ class TUEVPretrainDataset(Dataset):
                 filtered = apply_bandpass_filter(montage_sig, fs, lowcut=0.5, highcut=45.0)
                 notched = apply_notch_filter(filtered, fs, freq=60.0)
                 normed = normalize_signals(notched, method='zscore')
+                
+                # EEG-specific preprocessing: clip extreme artifacts at ±6σ
+                normed = np.clip(normed, -6.0, 6.0).astype(np.float32)
 
                 if abs(fs - self.fs) > 1.0:
                     from scipy.signal import resample
@@ -170,6 +173,13 @@ class TUEVPretrainDataset(Dataset):
                 n_ch, n_samples = normed.shape
                 for start_idx in range(0, n_samples - self.window_samples + 1, self.stride_samples):
                     win = normed[:, start_idx : start_idx + self.window_samples]
+                    
+                    # Per-window re-normalization (removes slow drift within window)
+                    win_mean = win.mean(axis=-1, keepdims=True)
+                    win_std = win.std(axis=-1, keepdims=True)
+                    win_std[win_std < 1e-8] = 1.0
+                    win = ((win - win_mean) / win_std).astype(np.float32)
+                    
                     bp = self.psd_extractor.extract(win)
                     local_windows.append(win)
                     local_bps.append(bp)

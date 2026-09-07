@@ -173,6 +173,9 @@ class TUEVDownstreamDataset(Dataset):
                 filtered = apply_bandpass_filter(montage_sig, fs, lowcut=0.5, highcut=45.0)
                 notched = apply_notch_filter(filtered, fs, freq=60.0)
                 normed = normalize_signals(notched, method='zscore')
+                
+                # EEG-specific preprocessing: clip extreme artifacts at ±6σ
+                normed = np.clip(normed, -6.0, 6.0).astype(np.float32)
 
                 rec_path = edf_path.replace('.edf', '.rec')
                 events = parse_rec_file(rec_path)
@@ -189,6 +192,12 @@ class TUEVDownstreamDataset(Dataset):
                             if ev['label_id'] > 0:
                                 win_label = ev['label_id']
                                 break
+
+                    # Per-window re-normalization (removes slow drift within window)
+                    win_mean = win.mean(axis=-1, keepdims=True)
+                    win_std = win.std(axis=-1, keepdims=True)
+                    win_std[win_std < 1e-8] = 1.0
+                    win = ((win - win_mean) / win_std).astype(np.float32)
 
                     local_windows.append(win)
                     local_labels.append(win_label)

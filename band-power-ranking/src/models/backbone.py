@@ -137,6 +137,13 @@ class EEGMambaBackbone(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
+        # Learned attention pooling (replaces naive mean pooling)
+        self.attn_pool = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 4),
+            nn.Tanh(),
+            nn.Linear(embed_dim // 4, 1, bias=False)
+        )
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -155,8 +162,10 @@ class EEGMambaBackbone(nn.Module):
             residual = h
             h = layer(norm(h)) + residual
 
-        # Global temporal pooling
-        pooled_latent = h.mean(dim=1)  # (B, embed_dim)
+        # Learned attention-weighted temporal pooling
+        attn_scores = self.attn_pool(h).squeeze(-1)  # (B, T_tokens)
+        attn_weights = F.softmax(attn_scores, dim=1)  # (B, T_tokens)
+        pooled_latent = (h * attn_weights.unsqueeze(-1)).sum(dim=1)  # (B, embed_dim)
 
         # Reconstruct channel-specific representations via spatial cross-projection
         # (B, 1, embed_dim) + (1, C, embed_dim) -> (B, C, embed_dim)

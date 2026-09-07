@@ -178,21 +178,43 @@ class TUEVEvaluator:
             best_f1 = 0.0
             best_thresh = 0.5
             best_preds = y_pred
-            for thresh in np.linspace(0.40, 0.60, 21):
+            for thresh in np.linspace(0.05, 0.95, 91):
                 thresh_preds = (y_prob_positive >= thresh).astype(int)
-                from sklearn.metrics import precision_score, recall_score
-                t_prec = precision_score(y_true, thresh_preds, zero_division=0)
-                t_rec = recall_score(y_true, thresh_preds, zero_division=0)
-                t_f1 = f1_score(y_true, thresh_preds, average='macro', zero_division=0)
+                
+                # Compute full confusion matrix counts
+                tp = int(((thresh_preds == 1) & (y_true == 1)).sum())
+                fp = int(((thresh_preds == 1) & (y_true == 0)).sum())
+                tn = int(((thresh_preds == 0) & (y_true == 0)).sum())
+                fn = int(((thresh_preds == 0) & (y_true == 1)).sum())
+                
+                sensitivity = tp / max(1, tp + fn)  # Recall / TPR
+                specificity = tn / max(1, tn + fp)  # TNR
+                ppv = tp / max(1, tp + fp)           # Precision / PPV
+                npv = tn / max(1, tn + fn)           # NPV
+                bal_acc = (sensitivity + specificity) / 2.0
+                
+                # Binary F1 (harmonic mean of precision & recall for positive class)
+                binary_f1 = (2 * ppv * sensitivity) / max(1e-8, ppv + sensitivity)
+                # F2 score (recall-weighted: beta=2 weighs recall 4x more than precision)
+                beta2 = 4.0  # beta^2 where beta=2
+                f2 = ((1 + beta2) * ppv * sensitivity) / max(1e-8, beta2 * ppv + sensitivity)
+                
+                macro_f1 = f1_score(y_true, thresh_preds, average='macro', zero_division=0)
                 
                 threshold_sweep_data[f"{thresh:.2f}"] = {
-                    "precision": float(t_prec),
-                    "recall": float(t_rec),
-                    "macro_f1": float(t_f1)
+                    "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+                    "sensitivity": float(sensitivity),
+                    "specificity": float(specificity),
+                    "ppv": float(ppv),
+                    "npv": float(npv),
+                    "balanced_accuracy": float(bal_acc),
+                    "binary_f1": float(binary_f1),
+                    "f2_score": float(f2),
+                    "macro_f1": float(macro_f1)
                 }
                 
-                if t_f1 > best_f1:
-                    best_f1 = t_f1
+                if macro_f1 > best_f1:
+                    best_f1 = macro_f1
                     best_thresh = thresh
                     best_preds = thresh_preds
             y_pred = best_preds
@@ -235,7 +257,7 @@ class TUEVEvaluator:
 
     def run(self) -> Dict[str, Any]:
         print(f"--- Starting Downstream {self.mode.upper()} Evaluation ({self.num_epochs} epochs) ---")
-        best_val_f1 = -1.0
+        best_val_auprc = -1.0
         best_metrics = {}
         patience_counter = 0
 
@@ -245,20 +267,20 @@ class TUEVEvaluator:
 
             # Evaluate every epoch for accurate patience tracking
             val_metrics = self.evaluate()
-            f1 = val_metrics['macro_f1']
+            auprc = val_metrics['auprc']
             b_acc = val_metrics['balanced_accuracy']
 
             print(
                 f"[{self.mode} Epoch {epoch:02d}/{self.num_epochs:02d}] "
                 f"Train Loss: {train_loss:.4f} | "
                 f"Bal Acc: {b_acc*100:.2f}% | "
-                f"Macro F1: {f1:.4f} | "
-                f"PR-AUC: {val_metrics['auprc']:.4f} | "
+                f"Macro F1: {val_metrics['macro_f1']:.4f} | "
+                f"PR-AUC: {auprc:.4f} | "
                 f"AUROC: {val_metrics['auroc']:.4f}"
             )
 
-            if f1 > best_val_f1:
-                best_val_f1 = f1
+            if auprc > best_val_auprc:
+                best_val_auprc = auprc
                 best_metrics = val_metrics
                 patience_counter = 0
                 
@@ -270,7 +292,7 @@ class TUEVEvaluator:
             else:
                 patience_counter += 1
                 if patience_counter >= self.patience:
-                    print(f"Early stopping triggered at epoch {epoch}. Best Val Macro F1: {best_val_f1:.4f} | Best Train Macro F1: {best_metrics.get('train_macro_f1', 0.0):.4f}")
+                    print(f"Early stopping triggered at epoch {epoch}. Best Val PR-AUC: {best_val_auprc:.4f} | Best Train Macro F1: {best_metrics.get('train_macro_f1', 0.0):.4f}")
                     break
 
         return best_metrics

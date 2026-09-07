@@ -190,7 +190,20 @@ def run_experiment(
         curr_val._labels_mmap = None
         curr_val._windows_mmap = None
         
-        curr_train_loader = DataLoader(curr_train, batch_size=512, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
+        # Class-stratified sampling for typing (balances rare classes like SPSW)
+        if task_name == "typing":
+            ds_labels_arr = np.array(ds_train_labels)
+            class_counts = np.bincount(ds_labels_arr, minlength=num_cls)
+            class_weights = 1.0 / (class_counts + 1e-8)
+            sample_weights = class_weights[ds_labels_arr]
+            sampler = WeightedRandomSampler(
+                weights=torch.from_numpy(sample_weights).double(),
+                num_samples=len(ds_train_labels),
+                replacement=True
+            )
+            curr_train_loader = DataLoader(curr_train, batch_size=512, sampler=sampler, drop_last=False, num_workers=4, pin_memory=True)
+        else:
+            curr_train_loader = DataLoader(curr_train, batch_size=512, shuffle=True, drop_last=False, num_workers=4, pin_memory=True)
         curr_val_loader = DataLoader(curr_val, batch_size=512, shuffle=False, num_workers=4, pin_memory=True)
         
         evaluator = TUEVEvaluator(
@@ -247,7 +260,7 @@ def run_experiment(
 
 import numpy as np
 
-def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 15, patience: int = 10, fast_mode: bool = False):
+def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 50, patience: int = 15, fast_mode: bool = False):
     records = []
     
     # Force real data!
@@ -284,7 +297,7 @@ def run_full_suite(output_dir: str, pretrain_eps: int = 15, eval_eps: int = 15, 
     print(">>> FULL ABLATION SUITE COMPLETED")
     print(f"Results saved to: {csv_path} and {json_path}")
     print("=" * 80)
-    print(df[['model_type', 'pretext_task', 'loss_type', 'eval_mode', 'balanced_accuracy', 'macro_f1', 'auroc']])
+    print(df.to_string())
 
     try:
         from generate_report import generate_plots_and_report
