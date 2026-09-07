@@ -1,0 +1,2 @@
+model_type,pretext_task,loss_type,tie_margin,embed_dim,eval_mode,pretrain_epochs,eval_epochs,pretrain_time_sec,eval_time_sec,pretrain_val_rho_a,pretrain_val_rho_c,detect_auroc,detect_prauc,detect_macro_f1,type_weighted_f1,type_macro_f1
+mamba,variant_c,pairwise,0.001,512,fine_tune,15,15,24395.31,4489.39,0.0,0.9426,0.6727,0.0339,0.5231,0.4259,0.435
